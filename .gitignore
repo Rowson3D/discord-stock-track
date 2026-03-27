@@ -1,0 +1,22 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Runtime data and logs
+data/
+watchlist.json
+*.log
+
+# Local environment overrides
+.env
+.env.*
+
+# OS/editor noise
+.DS_Store
+Thumbs.db

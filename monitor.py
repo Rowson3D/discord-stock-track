@@ -1,0 +1,280 @@
+"""
+StockMonitor: manages the watchlist, polling loop, and Discord alert dispatch.
+"""
+import json
+import asyncio
+import logging
+import time
+from urllib.parse import urlparse
+from pathlib import Path
+
+import discord
+from config import CONFIG
+from scrapers import scrape
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+STATUS_EMOJI = {
+    "in_stock":     "🟢",
+    "out_of_stock": "🔴",
+    "low_stock":    "🟡",
+    "unknown":      "⚪",
+}
+
+STATUS_COLOR = {
+    "in_stock":     0x57F287,   # green
+    "out_of_stock": 0xED4245,   # red
+    "low_stock":    0xFEE75C,   # yellow
+    "unknown":      0x99AAB5,   # grey
+}
+
+SITE_NAMES = {
+    "ui.com":            "Ubiquiti Store",
+    "amazon.com":        "Amazon",
+    "bhphotovideo.com":  "B&H Photo",
+    "newegg.com":        "Newegg",
+}
+
+
+def detect_site(url: str) -> str | None:
+    """Return the canonical site key from a URL, or None if unsupported."""
+    host = urlparse(url.strip()).netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+
+    for key in ["ui.com", "amazon.com", "bhphotovideo.com", "newegg.com"]:
+        if key in host:
+            return key
+    return None
+
+
+class StockMonitor:
+    def __init__(self, bot):
+        self.bot = bot
+        self.watchlist: list[dict] = []
+        self.watchlist_file = Path(CONFIG["watchlist_file"]).expanduser().resolve()
+        # Track last check time per URL for per-site interval logic
+        self._last_checked: dict[str, float] = {}
+
+    # ── Watchlist persistence ──────────────────────────────────────
+
+    def load_watchlist(self):
+        """Load watchlist from JSON, merging with config defaults."""
+        if self.watchlist_file.exists():
+            try:
+                with self.watchlist_file.open(encoding="utf-8") as f:
+                    self.watchlist = json.load(f)
+                logger.info(f"Loaded {len(self.watchlist)} products from watchlist.")
+            except Exception as e:
+                logger.error(f"Failed to load watchlist: {e}")
+                self.watchlist = []
+        else:
+            self.watchlist = []
+
+        # Merge default products from config (skip duplicates)
+        existing_urls = {p["url"] for p in self.watchlist}
+        for product in CONFIG.get("default_products", []):
+            if product["url"] not in existing_urls:
+                product = dict(product)
+                product.setdefault("last_status", "unknown")
+                product.setdefault("last_seen_in_stock", None)
+                self.watchlist.append(product)
+                logger.info(f"Added default product: {product['name']}")
+
+        self._save_watchlist()
+
+    def _save_watchlist(self):
+        try:
+            self.watchlist_file.parent.mkdir(parents=True, exist_ok=True)
+            temp_file = self.watchlist_file.with_suffix(f"{self.watchlist_file.suffix}.tmp")
+            with temp_file.open("w", encoding="utf-8") as f:
+                json.dump(self.watchlist, f, indent=2)
+            temp_file.replace(self.watchlist_file)
+        except Exception as e:
+            logger.error(f"Failed to save watchlist: {e}")
+
+    # ── Add / Remove ───────────────────────────────────────────────
+
+    def add_product(self, url: str) -> str:
+        url = url.strip()
+        site = detect_site(url)
+        if not site:
+            return (
+                f"❌ Unsupported site. Supported: "
+                f"ui.com, amazon.com, bhphotovideo.com, newegg.com"
+            )
+
+        existing = [p for p in self.watchlist if p["url"] == url]
+        if existing:
+            return f"⚠️ Already watching: {url}"
+
+        product = {
+            "url": url,
+            "name": url,          # Will be updated on first check
+            "site": site,
+            "last_status": "unknown",
+            "last_seen_in_stock": None,
+        }
+        self.watchlist.append(product)
+        self._save_watchlist()
+        return f"✅ Now watching **{SITE_NAMES[site]}**: {url}"
+
+    def remove_product(self, url: str) -> str:
+        url = url.strip()
+        before = len(self.watchlist)
+        self.watchlist = [p for p in self.watchlist if p["url"] != url]
+        if len(self.watchlist) < before:
+            self._save_watchlist()
+            return f"🗑️ Removed from watchlist: {url}"
+        return f"⚠️ URL not found in watchlist: {url}"
+
+    def get_watchlist(self) -> list[dict]:
+        return self.watchlist
+
+    # ── Polling loop ───────────────────────────────────────────────
+
+    async def run_loop(self):
+        logger.info("Polling loop started.")
+        await self.bot.wait_until_ready()
+
+        try:
+            while not self.bot.is_closed():
+                await self.check_all()
+                await asyncio.sleep(10)  # Inner sleep; per-product interval is enforced below
+        except asyncio.CancelledError:
+            logger.info("Polling loop cancelled.")
+            raise
+
+    async def check_all(self, force: bool = False):
+        if not self.watchlist:
+            return
+
+        channel = self.bot.get_channel(CONFIG["discord"]["channel_id"])
+        if not channel:
+            try:
+                channel = await self.bot.fetch_channel(CONFIG["discord"]["channel_id"])
+            except discord.DiscordException:
+                logger.warning("Discord channel not found. Check DISCORD_CHANNEL_ID or config.py.")
+                return
+
+        for product in self.watchlist:
+            url = product["url"]
+            site = product["site"]
+            interval = CONFIG["check_intervals"].get(site, 60)
+            now = time.time()
+
+            # Skip if checked recently (unless forced)
+            if not force and (now - self._last_checked.get(url, 0)) < interval:
+                continue
+
+            self._last_checked[url] = now
+
+            try:
+                result = await asyncio.get_event_loop().run_in_executor(
+                    None, scrape, url, site
+                )
+            except Exception as e:
+                logger.error(f"Scrape error for {url}: {e}")
+                continue
+
+            result = self._normalize_result(result)
+
+            new_status = result.get("status", "unknown")
+            old_status = product.get("last_status", "unknown")
+
+            # Update name if we got one
+            if result.get("name") and result["name"] != url:
+                product["name"] = result["name"]
+
+            logger.info(f"[{site}] {product['name']}: {old_status} → {new_status}")
+
+            should_alert = self._should_alert(old_status, new_status)
+
+            if should_alert:
+                embed = self._build_embed(product, result, old_status, new_status)
+                await channel.send(embed=embed)
+
+            # Update stored state
+            product["last_status"] = new_status
+            if new_status == "in_stock":
+                product["last_seen_in_stock"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+            self._save_watchlist()
+
+    def _normalize_result(self, result: dict) -> dict:
+        normalized = dict(result)
+        quantity = normalized.get("quantity")
+        threshold = CONFIG.get("low_stock_threshold", 5)
+
+        if normalized.get("status") == "in_stock" and isinstance(quantity, int) and quantity <= threshold:
+            normalized["status"] = "low_stock"
+
+        return normalized
+
+    def _should_alert(self, old: str, new: str) -> bool:
+        alerts = CONFIG.get("alerts", {})
+
+        if new == "unknown":
+            return False
+
+        # Back in stock (was OOS, now available)
+        if alerts.get("back_in_stock") and old == "out_of_stock" and new in ("in_stock", "low_stock"):
+            return True
+
+        # Newly in stock (from unknown too)
+        if alerts.get("in_stock") and new == "in_stock" and old != "in_stock":
+            return True
+
+        # Low stock warning
+        if alerts.get("low_stock") and new == "low_stock" and old != "low_stock":
+            return True
+
+        return False
+
+    def _build_embed(self, product: dict, result: dict, old_status: str, new_status: str) -> discord.Embed:
+        site = product["site"]
+        name = product["name"]
+        url = product["url"]
+        price = result.get("price")
+        quantity = result.get("quantity")
+
+        emoji = STATUS_EMOJI.get(new_status, "⚪")
+        color = STATUS_COLOR.get(new_status, 0x99AAB5)
+        site_name = SITE_NAMES.get(site, site)
+
+        # Title based on transition
+        if old_status == "out_of_stock" and new_status in ("in_stock", "low_stock"):
+            title = f"🔔 BACK IN STOCK — {name}"
+        elif new_status == "in_stock":
+            title = f"🟢 IN STOCK — {name}"
+        elif new_status == "low_stock":
+            title = f"🟡 LOW STOCK WARNING — {name}"
+        else:
+            title = f"{emoji} Stock Update — {name}"
+
+        embed = discord.Embed(
+            title=title,
+            url=url,
+            color=color,
+        )
+        embed.add_field(name="Retailer", value=site_name, inline=True)
+        embed.add_field(name="Status", value=f"{emoji} {new_status.replace('_', ' ').title()}", inline=True)
+
+        if price:
+            embed.add_field(name="Price", value=price, inline=True)
+
+        if quantity is not None:
+            embed.add_field(name="Qty Remaining", value=str(quantity), inline=True)
+
+        if old_status != "unknown":
+            embed.add_field(
+                name="Previous Status",
+                value=f"{STATUS_EMOJI.get(old_status, '⚪')} {old_status.replace('_', ' ').title()}",
+                inline=True,
+            )
+
+        embed.add_field(name="🔗 Product Link", value=url, inline=False)
+        embed.set_footer(text=f"Stock Bot • {site_name} • {time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+        return embed

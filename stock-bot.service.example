@@ -1,0 +1,21 @@
+[Unit]
+Description=Discord Stock Tracker Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=stockbot
+Group=stockbot
+WorkingDirectory=/opt/tracker-network-stock
+Environment=PYTHONUNBUFFERED=1
+Environment=STOCK_BOT_DATA_DIR=/var/lib/tracker-network-stock
+EnvironmentFile=/etc/tracker-network-stock/bot.env
+ExecStart=/opt/tracker-network-stock/.venv/bin/python /opt/tracker-network-stock/bot.py
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
