@@ -46,7 +46,17 @@ playwright install --with-deps chromium
 
 ### 4. Configure the bot
 
-For local testing, you can still edit `config.py`, but for a Linux host or service use environment variables instead:
+For local testing, copy the example env file to `.env` in the repo root and fill in your real values:
+```bash
+cp tracker-network-stock.env.example .env
+```
+
+On Windows PowerShell:
+```powershell
+Copy-Item tracker-network-stock.env.example .env
+```
+
+The app now loads `.env` automatically. You can still use exported environment variables instead:
 ```bash
 export DISCORD_BOT_TOKEN="your-token"
 export DISCORD_CHANNEL_ID="123456789012345678"
@@ -81,7 +91,7 @@ chmod +x ./setup_linux_service.sh
 ./setup_linux_service.sh
 ```
 
-If your token and channel are already in the shell environment, the script will write `/etc/tracker-network-stock/bot.env` for you:
+If your token and channel are already in the shell environment, the script will write `/etc/tracker-network-stock/bot.env` for you. If they are not set yet, the script now prompts for them and validates that they are not placeholders before starting the service:
 ```bash
 export DISCORD_BOT_TOKEN="your-token"
 export DISCORD_CHANNEL_ID="123456789012345678"
@@ -95,17 +105,17 @@ RUN_USER=jarrod RUN_GROUP=jarrod REPO_DIR="$PWD" ./setup_linux_service.sh
 
 Typical setup on a Linux machine:
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-playwright install --with-deps chromium
-
-sudo mkdir -p /etc/tracker-network-stock /var/lib/tracker-network-stock
-sudo cp stock-bot.service.example /etc/systemd/system/tracker-network-stock.service
-sudo cp tracker-network-stock.env.example /etc/tracker-network-stock/bot.env
-sudo systemctl daemon-reload
-sudo systemctl enable --now tracker-network-stock.service
+git clone <your-repo-url>
+cd tracker-network-stock
+chmod +x ./setup_linux_service.sh
+./setup_linux_service.sh
 ```
+
+The script still cannot automate Discord itself. Before you run it, make sure you have:
+- created the bot application
+- enabled `Message Content Intent`
+- invited it with `View Channels`, `Send Messages`, and `Embed Links`
+- copied the bot token and target channel ID
 
 After editing `/etc/tracker-network-stock/bot.env`, restart with:
 ```bash

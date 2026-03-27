@@ -6,8 +6,11 @@ Prefer environment variables for secrets and deployment-specific settings.
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 
 BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
 DATA_DIR = Path(os.getenv("STOCK_BOT_DATA_DIR", BASE_DIR / "data")).expanduser()
 WATCHLIST_FILE = Path(
     os.getenv("STOCK_BOT_WATCHLIST_FILE", DATA_DIR / "watchlist.json")

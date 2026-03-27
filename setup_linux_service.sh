@@ -8,6 +8,7 @@ VENV_DIR="${VENV_DIR:-$REPO_DIR/.venv}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 CONFIG_DIR="/etc/tracker-network-stock"
 ENV_FILE="$CONFIG_DIR/bot.env"
+ENV_TEMPLATE_FILE="$REPO_DIR/tracker-network-stock.env.example"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 DATA_DIR="${STOCK_BOT_DATA_DIR:-$REPO_DIR/data}"
 RUN_USER="${RUN_USER:-${SUDO_USER:-$USER}}"
@@ -57,26 +58,142 @@ require_file() {
     [[ -f "$file_path" ]] || fail "Missing required file: $file_path"
 }
 
-write_env_file() {
-    if [[ -f "$ENV_FILE" ]]; then
-        log "Using existing env file at $ENV_FILE"
-        return
-    fi
+is_placeholder_token() {
+    local value="${1:-}"
+    [[ -z "$value" || "$value" == "replace-me" || "$value" == "YOUR_BOT_TOKEN_HERE" ]]
+}
 
-    if [[ -n "${DISCORD_BOT_TOKEN:-}" && -n "${DISCORD_CHANNEL_ID:-}" ]]; then
-        log "Creating env file from current environment variables"
-        run_root mkdir -p "$CONFIG_DIR"
-        run_root /bin/sh -c "cat > '$ENV_FILE' <<EOF
-DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
-DISCORD_CHANNEL_ID=${DISCORD_CHANNEL_ID}
-EOF"
-        return
-    fi
+is_valid_channel_id() {
+    local value="${1:-}"
+    [[ "$value" =~ ^[0-9]{17,20}$ ]] && [[ "$value" != "123456789012345678" ]]
+}
 
-    log "Creating placeholder env file at $ENV_FILE"
+has_prompt_tty() {
+    [[ -r /dev/tty && -w /dev/tty ]]
+}
+
+extract_env_value_root() {
+    local key="$1"
+    run_root /bin/sh -c "grep -E '^${key}=' '$ENV_FILE' | head -n 1 | cut -d= -f2-" 2>/dev/null || true
+}
+
+show_discord_setup_guide() {
+    cat <<EOF
+
+Discord setup checklist:
+  1. Create a bot in https://discord.com/developers/applications
+  2. Enable Message Content Intent in the Bot tab
+  3. Invite the bot with: View Channels, Send Messages, Embed Links
+  4. Copy the bot token
+  5. Copy the target channel ID (Developer Mode must be enabled in Discord)
+EOF
+}
+
+prompt_bot_token() {
+    local current_value="${1:-}"
+    local value
+
+    while true; do
+        if ! is_placeholder_token "$current_value"; then
+            printf 'Discord bot token [press Enter to keep existing]: ' > /dev/tty
+        else
+            printf 'Discord bot token: ' > /dev/tty
+        fi
+
+        IFS= read -r -s value < /dev/tty || fail "Unable to read Discord bot token"
+        printf '\n' > /dev/tty
+
+        if [[ -z "$value" ]]; then
+            value="$current_value"
+        fi
+
+        if ! is_placeholder_token "$value"; then
+            printf '%s' "$value"
+            return
+        fi
+
+        warn "Discord bot token cannot be empty or a placeholder."
+    done
+}
+
+prompt_channel_id() {
+    local current_value="${1:-}"
+    local value
+
+    while true; do
+        if is_valid_channel_id "$current_value"; then
+            printf 'Discord channel ID [press Enter to keep existing]: ' > /dev/tty
+        else
+            printf 'Discord channel ID: ' > /dev/tty
+        fi
+
+        IFS= read -r value < /dev/tty || fail "Unable to read Discord channel ID"
+
+        if [[ -z "$value" ]]; then
+            value="$current_value"
+        fi
+
+        if is_valid_channel_id "$value"; then
+            printf '%s' "$value"
+            return
+        fi
+
+        warn "Discord channel ID must be a numeric Discord snowflake."
+    done
+}
+
+write_env_contents() {
+    local token_value="$1"
+    local channel_value="$2"
+
     run_root mkdir -p "$CONFIG_DIR"
-    run_root cp "$REPO_DIR/tracker-network-stock.env.example" "$ENV_FILE"
-    warn "Edit $ENV_FILE and replace placeholder values before starting the service."
+    run_root /bin/sh -c "cat > '$ENV_FILE' <<EOF
+DISCORD_BOT_TOKEN=${token_value}
+DISCORD_CHANNEL_ID=${channel_value}
+EOF"
+    run_root chmod 600 "$ENV_FILE"
+}
+
+write_env_file() {
+    local env_token="${DISCORD_BOT_TOKEN:-}"
+    local env_channel="${DISCORD_CHANNEL_ID:-}"
+    local file_token=""
+    local file_channel=""
+
+    if ! is_placeholder_token "$env_token" && is_valid_channel_id "$env_channel"; then
+        log "Writing env file from current environment variables"
+        write_env_contents "$env_token" "$env_channel"
+        return
+    fi
+
+    if [[ -f "$ENV_FILE" ]]; then
+        file_token="$(extract_env_value_root DISCORD_BOT_TOKEN)"
+        file_channel="$(extract_env_value_root DISCORD_CHANNEL_ID)"
+
+        if ! is_placeholder_token "$file_token" && is_valid_channel_id "$file_channel"; then
+            log "Using existing env file at $ENV_FILE"
+            return
+        fi
+
+        warn "Existing env file at $ENV_FILE is incomplete; collecting Discord settings."
+    fi
+
+    has_prompt_tty || fail "Missing Discord configuration. Export DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID before running setup, or rerun from an interactive shell."
+
+    show_discord_setup_guide
+
+    if is_placeholder_token "$env_token"; then
+        env_token="$file_token"
+    fi
+    if ! is_valid_channel_id "$env_channel"; then
+        env_channel="$file_channel"
+    fi
+
+    env_token="$(prompt_bot_token "$env_token")"
+    env_channel="$(prompt_channel_id "$env_channel")"
+
+    log "Writing env file to $ENV_FILE"
+    write_env_contents "$env_token" "$env_channel"
 }
 
 validate_env_file() {
@@ -84,12 +201,18 @@ validate_env_file() {
         fail "Env file not found at $ENV_FILE"
     fi
 
-    if run_root grep -Eq '^DISCORD_BOT_TOKEN=replace-me$|^DISCORD_BOT_TOKEN=$' "$ENV_FILE"; then
+    local token_value
+    local channel_value
+
+    token_value="$(extract_env_value_root DISCORD_BOT_TOKEN)"
+    channel_value="$(extract_env_value_root DISCORD_CHANNEL_ID)"
+
+    if is_placeholder_token "$token_value"; then
         warn "DISCORD_BOT_TOKEN is still a placeholder in $ENV_FILE"
         return 1
     fi
 
-    if run_root grep -Eq '^DISCORD_CHANNEL_ID=123456789012345678$|^DISCORD_CHANNEL_ID=$' "$ENV_FILE"; then
+    if ! is_valid_channel_id "$channel_value"; then
         warn "DISCORD_CHANNEL_ID is still a placeholder in $ENV_FILE"
         return 1
     fi
@@ -145,7 +268,7 @@ start_service() {
 main() {
     require_file "$REPO_DIR/bot.py"
     require_file "$REPO_DIR/requirements.txt"
-    require_file "$REPO_DIR/tracker-network-stock.env.example"
+    require_file "$ENV_TEMPLATE_FILE"
 
     command -v "$PYTHON_BIN" >/dev/null 2>&1 || fail "Python interpreter not found: $PYTHON_BIN"
     command -v systemctl >/dev/null 2>&1 || fail "systemctl is required for this setup"
