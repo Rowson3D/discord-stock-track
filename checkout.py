@@ -135,7 +135,11 @@ def _test_ui_checkout(product: dict) -> dict:
             page = browser.new_page()
             page.goto(product["url"], wait_until="networkidle", timeout=45000)
             _dismiss_ui_overlays(page)
-            add_to_cart = page.get_by_role("button", name=re.compile(r"add to (cart|bag)", re.I)).first
+            unavailable = _detect_unavailable_reason(page)
+            if unavailable:
+                return _result("unavailable", f"No-charge test reached product page. `{unavailable}` shown, so no add-to-cart button expected. Nothing clicked.")
+
+            add_to_cart = _add_to_cart_locator(page)
             add_to_cart.wait_for(state="visible", timeout=15000)
             title = page.locator("h1").first.inner_text(timeout=5000).strip()
             return _result("ok", f"No-charge test passed. Add-to-cart visible for `{title or product.get('name')}`. Nothing clicked.")
@@ -171,8 +175,38 @@ def _set_quantity_if_present(page, quantity: int) -> None:
 
 
 def _click_add_to_cart(page) -> None:
-    button = page.get_by_role("button", name=re.compile(r"add to (cart|bag)", re.I)).first
+    unavailable = _detect_unavailable_reason(page)
+    if unavailable:
+        raise RuntimeError(f"Product unavailable: {unavailable}")
+
+    button = _add_to_cart_locator(page)
     button.click(timeout=15000)
+
+
+def _add_to_cart_locator(page):
+    candidates = [
+        page.get_by_role("button", name=re.compile(r"add\s+to\s+(cart|bag)", re.I)).first,
+        page.locator("button").filter(has_text=re.compile(r"add\s+to\s+(cart|bag)", re.I)).first,
+        page.locator("[data-testid*='add' i], [aria-label*='add to cart' i], [aria-label*='add to bag' i]").first,
+    ]
+    return candidates[0].or_(candidates[1]).or_(candidates[2]).first
+
+
+def _detect_unavailable_reason(page) -> str | None:
+    text = page.locator("body").inner_text(timeout=5000).lower()
+    for phrase in (
+        "sold out",
+        "out of stock",
+        "notify me",
+        "subscribe to back in stock",
+        "back in stock emails",
+        "coming soon",
+        "unavailable",
+        "not available",
+    ):
+        if phrase in text:
+            return phrase
+    return None
 
 
 def _open_cart_or_checkout(page) -> None:
