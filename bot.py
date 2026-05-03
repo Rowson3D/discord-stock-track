@@ -69,7 +69,14 @@ async def list_products(ctx):
     for i, p in enumerate(products, 1):
         status = p.get("last_status", "unknown")
         emoji = {"in_stock": "🟢", "out_of_stock": "🔴", "low_stock": "🟡", "unknown": "⚪"}.get(status, "⚪")
-        lines.append(f"`{i}.` {emoji} **{p['name']}**\n    {p['url']}\n    Site: `{p['site']}`\n")
+        label = p.get("sku") or p["name"]
+        vendor = p.get("vendor") or p["site"]
+        pack = f" · Pack: `{p['pack']}`" if p.get("pack") else ""
+        lines.append(
+            f"`{i}.` {emoji} **{label}**\n"
+            f"    {p['url']}\n"
+            f"    Site: `{p['site']}` · Vendor: `{vendor}`{pack}\n"
+        )
 
     await ctx.send("\n".join(lines))
 

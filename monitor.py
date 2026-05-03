@@ -152,8 +152,8 @@ class StockMonitor:
         skipped = 0
         existing_urls = {p["url"] for p in self.watchlist}
 
-        for product in pack.get("products", []):
-            for vendor in product.get("vendors", []):
+        for product in pack.get("products") or []:
+            for vendor in product.get("vendors") or []:
                 url = vendor.get("url", "").strip()
                 site = vendor.get("site") or detect_site(url)
                 if not url or not site or url in existing_urls:
@@ -215,7 +215,7 @@ class StockMonitor:
                 "description": pack.get("description") or "",
                 "products": products,
                 "product_count": len(products),
-                "watch_entry_count": sum(len(product.get("vendors", [])) for product in products),
+                "watch_entry_count": sum(len(product.get("vendors") or []) for product in products),
             }
 
         return packs
