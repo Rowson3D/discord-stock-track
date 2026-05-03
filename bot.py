@@ -2,6 +2,8 @@
 Stock Alert Discord Bot - Main Entry Point
 """
 import asyncio
+from datetime import timedelta
+
 import discord
 from discord.ext import commands
 from config import CONFIG
@@ -17,11 +19,14 @@ class StockBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         self.monitor = StockMonitor(self)
         self.monitor_task: asyncio.Task | None = None
+        self.cleanup_task: asyncio.Task | None = None
 
     async def setup_hook(self):
         self.monitor.load_watchlist()
         if self.monitor_task is None or self.monitor_task.done():
             self.monitor_task = asyncio.create_task(self.monitor.run_loop(), name="stock-monitor")
+        if CONFIG.get("message_cleanup", {}).get("enabled") and (self.cleanup_task is None or self.cleanup_task.done()):
+            self.cleanup_task = asyncio.create_task(self.cleanup_loop(), name="message-cleanup")
 
     async def close(self):
         if self.monitor_task and not self.monitor_task.done():
@@ -31,7 +36,67 @@ class StockBot(commands.Bot):
             except asyncio.CancelledError:
                 pass
 
+        if self.cleanup_task and not self.cleanup_task.done():
+            self.cleanup_task.cancel()
+            try:
+                await self.cleanup_task
+            except asyncio.CancelledError:
+                pass
+
         await super().close()
+
+    async def cleanup_loop(self):
+        await self.wait_until_ready()
+
+        cleanup = CONFIG.get("message_cleanup", {})
+        interval_seconds = max(60, int(cleanup.get("interval_minutes", 10)) * 60)
+
+        while not self.is_closed():
+            await self.cleanup_channel_messages()
+            await asyncio.sleep(interval_seconds)
+
+    async def cleanup_channel_messages(self) -> int:
+        cleanup = CONFIG.get("message_cleanup", {})
+        channel = self.get_channel(CONFIG["discord"]["channel_id"])
+        if not channel:
+            try:
+                channel = await self.fetch_channel(CONFIG["discord"]["channel_id"])
+            except discord.DiscordException:
+                return 0
+
+        ttl_minutes = max(1, int(cleanup.get("ttl_minutes", 60)))
+        cutoff = discord.utils.utcnow() - timedelta(minutes=ttl_minutes)
+        scan_limit = max(1, int(cleanup.get("scan_limit", 200)))
+        delete_user_commands = bool(cleanup.get("delete_user_commands", False))
+        deleted = 0
+
+        async for message in channel.history(limit=scan_limit):
+            if message.created_at > cutoff:
+                continue
+            if message.pinned:
+                continue
+            if not self._cleanup_can_delete(message, delete_user_commands):
+                continue
+
+            try:
+                await message.delete()
+                deleted += 1
+                await asyncio.sleep(0.25)
+            except discord.Forbidden:
+                continue
+            except discord.NotFound:
+                continue
+            except discord.HTTPException:
+                continue
+
+        return deleted
+
+    def _cleanup_can_delete(self, message: discord.Message, delete_user_commands: bool) -> bool:
+        if self.user and message.author.id == self.user.id:
+            return True
+        if delete_user_commands and message.content.startswith(str(self.command_prefix)):
+            return True
+        return False
 
 
 bot = StockBot()
@@ -133,6 +198,13 @@ async def force_check(ctx):
     await ctx.send("✅ Manual check complete.")
 
 
+@bot.command(name="cleanup_now")
+async def cleanup_now(ctx):
+    """Delete old bot messages immediately using message cleanup settings."""
+    deleted = await bot.cleanup_channel_messages()
+    await ctx.send(f"🧹 Cleanup deleted `{deleted}` old messages.")
+
+
 @bot.command(name="checkout_config")
 async def checkout_config(ctx, index: int, enabled: str, quantity: int | None = None, max_quantity: int | None = None, max_unit_price: float | None = None, max_order_total: float | None = None):
     """Configure checkout for a watch. Usage: !checkout_config <index> <on|off> [qty] [max_qty] [max_unit] [max_order]"""
@@ -211,6 +283,7 @@ async def help_stock(ctx):
     embed.add_field(name="!watch_pack <pack_id>", value="Add a product pack to monitor", inline=False)
     embed.add_field(name="!report", value="Show current stock summary", inline=False)
     embed.add_field(name="!check", value="Force an immediate check now", inline=False)
+    embed.add_field(name="!cleanup_now", value="Delete old bot messages using cleanup settings", inline=False)
     embed.add_field(name="!checkout_config <index> <on|off> [qty] [max_qty] [max_unit] [max_order]", value="Configure guarded checkout for a watch", inline=False)
     embed.add_field(name="!checkout_test <index>", value="No-charge checkout readiness test", inline=False)
     embed.add_field(name="!checkout <index>", value="Run guarded checkout now for a watch", inline=False)

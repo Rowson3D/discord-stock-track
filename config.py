@@ -94,6 +94,14 @@ CONFIG = {
         "default_cooldown_hours": _get_int_env("CHECKOUT_DEFAULT_COOLDOWN_HOURS", 24),
     },
 
+    "message_cleanup": {
+        "enabled": _get_bool_env("MESSAGE_CLEANUP_ENABLED", False),
+        "ttl_minutes": _get_int_env("MESSAGE_CLEANUP_TTL_MINUTES", 60),
+        "interval_minutes": _get_int_env("MESSAGE_CLEANUP_INTERVAL_MINUTES", 10),
+        "scan_limit": _get_int_env("MESSAGE_CLEANUP_SCAN_LIMIT", 200),
+        "delete_user_commands": _get_bool_env("MESSAGE_CLEANUP_DELETE_USER_COMMANDS", False),
+    },
+
     # Watchlist file — products are saved/loaded from here
     "watchlist_file": str(WATCHLIST_FILE),
 

@@ -73,11 +73,29 @@ CHECKOUT_BROWSER_PROFILE_DIR=/data/playwright-profile
 CHECKOUT_DEFAULT_QUANTITY=1
 CHECKOUT_DEFAULT_MAX_QUANTITY=1
 CHECKOUT_DEFAULT_COOLDOWN_HOURS=24
+MESSAGE_CLEANUP_ENABLED=false
+MESSAGE_CLEANUP_TTL_MINUTES=60
+MESSAGE_CLEANUP_INTERVAL_MINUTES=10
+MESSAGE_CLEANUP_DELETE_USER_COMMANDS=false
 ```
 
 Runtime settings such as retailer intervals, alert toggles, low-stock threshold, and default products live in [config.py](config.py).
 
 Product packs live under [config/products](config/products). The included `unifi_msp` pack adds core UniFi gear commonly sourced by MSPs and installers.
+
+## Message Cleanup
+
+Enable cleanup to delete old bot messages from the configured Discord channel:
+
+```dotenv
+MESSAGE_CLEANUP_ENABLED=true
+MESSAGE_CLEANUP_TTL_MINUTES=60
+MESSAGE_CLEANUP_INTERVAL_MINUTES=10
+MESSAGE_CLEANUP_SCAN_LIMIT=200
+MESSAGE_CLEANUP_DELETE_USER_COMMANDS=false
+```
+
+The cleanup loop skips pinned messages and only deletes bot messages by default. Set `MESSAGE_CLEANUP_DELETE_USER_COMMANDS=true` to also delete old `!command` messages; the bot needs Discord `Manage Messages` permission for that. Use `!cleanup_now` to run cleanup immediately.
 
 ## Guarded Checkout
 
