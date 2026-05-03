@@ -12,6 +12,7 @@ from pathlib import Path
 import discord
 import yaml
 from config import CONFIG
+from checkout import checkout_enabled_for, checkout_summary, run_checkout, test_checkout
 from scrapers import scrape
 
 logger = logging.getLogger(__name__)
@@ -170,6 +171,7 @@ class StockMonitor:
                         "priority": product.get("priority", "normal"),
                         "pack": pack["id"],
                         "vendor": vendor.get("name") or SITE_NAMES.get(site, site),
+                        "checkout": vendor.get("checkout") or product.get("checkout") or {},
                         "last_status": "unknown",
                         "last_seen_in_stock": None,
                     }
@@ -229,6 +231,45 @@ class StockMonitor:
     def get_watchlist(self) -> list[dict]:
         return self.watchlist
 
+    def configure_checkout(self, index: int, enabled: bool, quantity: int | None = None, max_quantity: int | None = None, max_unit_price: float | None = None, max_order_total: float | None = None) -> str:
+        if index < 1 or index > len(self.watchlist):
+            return f"⚠️ Watch index out of range: {index}"
+
+        product = self.watchlist[index - 1]
+        checkout = dict(product.get("checkout") or {})
+        checkout["enabled"] = enabled
+        if quantity is not None:
+            checkout["quantity"] = max(1, quantity)
+        if max_quantity is not None:
+            checkout["max_quantity"] = max(1, max_quantity)
+        if max_unit_price is not None:
+            checkout["max_unit_price"] = max_unit_price
+        if max_order_total is not None:
+            checkout["max_order_total"] = max_order_total
+
+        product["checkout"] = checkout
+        self._save_watchlist()
+        return f"✅ Updated checkout for watch `{index}`: {checkout_summary(product)}"
+
+    async def checkout_product_by_index(self, index: int, force: bool = False) -> str:
+        if index < 1 or index > len(self.watchlist):
+            return f"⚠️ Watch index out of range: {index}"
+
+        product = self.watchlist[index - 1]
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, run_checkout, product, {}, force)
+        self._save_watchlist()
+        return f"{result['status']}: {result['message']}"
+
+    async def test_checkout_by_index(self, index: int) -> str:
+        if index < 1 or index > len(self.watchlist):
+            return f"⚠️ Watch index out of range: {index}"
+
+        product = self.watchlist[index - 1]
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, test_checkout, product)
+        return f"{result['status']}: {result['message']}"
+
     def build_watchlist_embeds(self) -> list[discord.Embed]:
         if not self.watchlist:
             embed = discord.Embed(title="Watchlist", description="📭 No products currently being monitored.", color=0x99AAB5)
@@ -265,7 +306,8 @@ class StockMonitor:
                     name=f"{idx}. {emoji} {sku}",
                     value=(
                         f"Vendor: `{vendor}` · Site: `{product['site']}`{pack}{price}\n"
-                        f"[Open product page]({product['url']})"
+                        f"[Open product page]({product['url']})\n"
+                        f"{checkout_summary(product)}"
                     ),
                     inline=False,
                 )
@@ -462,6 +504,13 @@ class StockMonitor:
                 except discord.DiscordException as e:
                     logger.error(f"Failed to send alert for {product['name']}: {e}")
 
+                if checkout_enabled_for(product):
+                    checkout_result = await loop.run_in_executor(None, run_checkout, product, result, False)
+                    try:
+                        await channel.send(f"Checkout `{checkout_result['status']}` for **{product['name']}**: {checkout_result['message']}")
+                    except discord.DiscordException as e:
+                        logger.error(f"Failed to send checkout result for {product['name']}: {e}")
+
             # Update stored state (only reached for definitive statuses)
             product["last_status"] = new_status
             if new_status == "in_stock":
@@ -544,6 +593,7 @@ class StockMonitor:
             )
 
         embed.add_field(name="Action", value=f"[Open product page]({url})", inline=False)
+        embed.add_field(name="Checkout", value=checkout_summary(product), inline=False)
         embed.set_footer(text=f"{site_name} stock monitor")
 
         return embed

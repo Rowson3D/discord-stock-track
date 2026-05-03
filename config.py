@@ -31,6 +31,30 @@ def _get_int_env(name: str, default: int) -> int:
         return default
 
 
+def _get_float_env(name: str, default: float | None = None) -> float | None:
+    value = os.getenv(name)
+    if value is None or value == "":
+        return default
+
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
+def _get_bool_env(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _get_list_env(name: str) -> list[str]:
+    value = os.getenv(name, "")
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
 CONFIG = {
     "discord": {
         # Prefer DISCORD_BOT_TOKEN in production/systemd deployments.
@@ -55,6 +79,20 @@ CONFIG = {
     },
 
     "low_stock_threshold": 5,   # Quantity at or below this = "low stock" warning
+
+    "checkout": {
+        # Disabled by default. First supported flow is ui.com add-to-cart/review.
+        "enabled": _get_bool_env("CHECKOUT_ENABLED", False),
+        "mode": os.getenv("CHECKOUT_MODE", "review_only"),
+        "headless": _get_bool_env("CHECKOUT_HEADLESS", True),
+        "browser_profile_dir": os.getenv("CHECKOUT_BROWSER_PROFILE_DIR", str(DATA_DIR / "playwright-profile")),
+        "allowed_approvers": _get_list_env("CHECKOUT_ALLOWED_APPROVERS"),
+        "max_order_total": _get_float_env("CHECKOUT_MAX_ORDER_TOTAL"),
+        "require_price_match": _get_bool_env("CHECKOUT_REQUIRE_PRICE_MATCH", True),
+        "default_quantity": _get_int_env("CHECKOUT_DEFAULT_QUANTITY", 1),
+        "default_max_quantity": _get_int_env("CHECKOUT_DEFAULT_MAX_QUANTITY", 1),
+        "default_cooldown_hours": _get_int_env("CHECKOUT_DEFAULT_COOLDOWN_HOURS", 24),
+    },
 
     # Watchlist file — products are saved/loaded from here
     "watchlist_file": str(WATCHLIST_FILE),

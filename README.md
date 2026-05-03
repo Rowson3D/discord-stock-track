@@ -10,6 +10,7 @@ The bot currently supports Ubiquiti, Amazon, B&H Photo, and Newegg. Ubiquiti pag
 - Sends Discord embeds when products become available or low stock.
 - Preserves last known status when a scraper returns `unknown`, preventing missed back-in-stock transitions caused by transient page or browser failures.
 - Persists watchlist data across restarts.
+- Can run guarded `ui.com` add-to-cart / checkout-review flows with quantity, price, and cooldown limits.
 - Includes Docker Compose, systemd, and local development workflows.
 - Includes a triage script for scraper/browser/alert-state verification.
 
@@ -66,11 +67,59 @@ Optional variables:
 ```dotenv
 STOCK_BOT_DATA_DIR=/data
 STOCK_BOT_WATCHLIST_FILE=/data/watchlist.json
+CHECKOUT_ENABLED=false
+CHECKOUT_MODE=review_only
+CHECKOUT_BROWSER_PROFILE_DIR=/data/playwright-profile
+CHECKOUT_DEFAULT_QUANTITY=1
+CHECKOUT_DEFAULT_MAX_QUANTITY=1
+CHECKOUT_DEFAULT_COOLDOWN_HOURS=24
 ```
 
 Runtime settings such as retailer intervals, alert toggles, low-stock threshold, and default products live in [config.py](config.py).
 
 Product packs live under [config/products](config/products). The included `unifi_msp` pack adds core UniFi gear commonly sourced by MSPs and installers.
+
+## Guarded Checkout
+
+Checkout is disabled by default and currently supports `ui.com` only. The bot can add an item to cart and open cart/checkout review, but it does not enter card details, CVV, or click final place-order controls.
+
+Recommended setup:
+
+1. Set shipping, billing, and saved payment inside your Ubiquiti account.
+2. Use a persistent Playwright profile directory with `CHECKOUT_BROWSER_PROFILE_DIR`.
+3. Log into Ubiquiti once with that profile before enabling checkout.
+4. Set `CHECKOUT_ENABLED=true` only after login/session is verified.
+5. Configure each watch with quantity and price caps.
+
+Discord commands:
+
+```text
+!checkout_config <index> <on|off> [qty] [max_qty] [max_unit] [max_order]
+!checkout_test <index>
+!checkout <index>
+```
+
+Use `!checkout_test <index>` first. It loads the product page with the saved browser profile, confirms the add-to-cart button is visible, and exits without clicking add-to-cart, checkout, payment, or place-order controls.
+
+Example:
+
+```text
+!checkout_config 1 on 1 1 199.00 230.00
+```
+
+Product-pack checkout settings can also be added per vendor/watch entry:
+
+```yaml
+checkout:
+  enabled: true
+  quantity: 1
+  max_quantity: 1
+  max_unit_price: 199.00
+  max_order_total: 230.00
+  cooldown_hours: 24
+```
+
+Do not store full card numbers or CVV in this repo. Use saved retailer payment instead.
 
 ## Quick Start: Docker on Linux
 

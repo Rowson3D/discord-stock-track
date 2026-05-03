@@ -37,6 +37,11 @@ class StockBot(commands.Bot):
 bot = StockBot()
 
 
+def _checkout_authorized(ctx) -> bool:
+    allowed = CONFIG.get("checkout", {}).get("allowed_approvers") or []
+    return not allowed or str(ctx.author.id) in allowed
+
+
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user} ({bot.user.id})")
@@ -128,6 +133,53 @@ async def force_check(ctx):
     await ctx.send("✅ Manual check complete.")
 
 
+@bot.command(name="checkout_config")
+async def checkout_config(ctx, index: int, enabled: str, quantity: int | None = None, max_quantity: int | None = None, max_unit_price: float | None = None, max_order_total: float | None = None):
+    """Configure checkout for a watch. Usage: !checkout_config <index> <on|off> [qty] [max_qty] [max_unit] [max_order]"""
+    if not _checkout_authorized(ctx):
+        await ctx.send("⚠️ You are not allowed to configure checkout.")
+        return
+
+    enabled_value = enabled.strip().lower()
+    if enabled_value not in {"on", "off", "true", "false", "yes", "no"}:
+        await ctx.send("⚠️ Enabled must be `on` or `off`.")
+        return
+
+    result = bot.monitor.configure_checkout(
+        index=index,
+        enabled=enabled_value in {"on", "true", "yes"},
+        quantity=quantity,
+        max_quantity=max_quantity,
+        max_unit_price=max_unit_price,
+        max_order_total=max_order_total,
+    )
+    await ctx.send(result)
+
+
+@bot.command(name="checkout")
+async def checkout(ctx, index: int):
+    """Run checkout for a watch by index. Usage: !checkout <index>"""
+    if not _checkout_authorized(ctx):
+        await ctx.send("⚠️ You are not allowed to run checkout.")
+        return
+
+    await ctx.send(f"🔄 Running checkout for watch `{index}`...")
+    result = await bot.monitor.checkout_product_by_index(index, force=True)
+    await ctx.send(result)
+
+
+@bot.command(name="checkout_test")
+async def checkout_test(ctx, index: int):
+    """Run a no-charge checkout readiness test. Usage: !checkout_test <index>"""
+    if not _checkout_authorized(ctx):
+        await ctx.send("⚠️ You are not allowed to test checkout.")
+        return
+
+    await ctx.send(f"🔎 Running no-charge checkout test for watch `{index}`...")
+    result = await bot.monitor.test_checkout_by_index(index)
+    await ctx.send(result)
+
+
 @bot.command(name="test_alert")
 async def test_alert(ctx, status: str = "in_stock"):
     """Send a simulated stock alert after 15 seconds. Usage: !test_alert [in_stock|low_stock|out_of_stock]"""
@@ -159,6 +211,9 @@ async def help_stock(ctx):
     embed.add_field(name="!watch_pack <pack_id>", value="Add a product pack to monitor", inline=False)
     embed.add_field(name="!report", value="Show current stock summary", inline=False)
     embed.add_field(name="!check", value="Force an immediate check now", inline=False)
+    embed.add_field(name="!checkout_config <index> <on|off> [qty] [max_qty] [max_unit] [max_order]", value="Configure guarded checkout for a watch", inline=False)
+    embed.add_field(name="!checkout_test <index>", value="No-charge checkout readiness test", inline=False)
+    embed.add_field(name="!checkout <index>", value="Run guarded checkout now for a watch", inline=False)
     embed.add_field(name="!test_alert [status]", value="Send a simulated alert embed after 15 seconds", inline=False)
     embed.add_field(
         name="Supported Sites",
