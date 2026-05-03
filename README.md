@@ -241,8 +241,11 @@ The example unit is [stock-bot.service.example](stock-bot.service.example).
 | Command | Description |
 |---|---|
 | `!watch <url>` | Add a supported product URL to the watchlist. |
-| `!unwatch <url>` | Remove a product URL from the watchlist. |
-| `!list` | Show monitored products and last known status. |
+| `!unwatch <index\|url>` | Remove a watch by list number or exact URL. |
+| `!unwatch_pack <pack_id>` | Remove all entries added from a product pack. |
+| `!remove_sku <sku>` | Remove all watch entries for a SKU. |
+| `!clear_watches confirm` | Clear the entire watchlist. |
+| `!list` | Show monitored products in paged embeds with index numbers. |
 | `!packs` | Show available product packs. |
 | `!watch_pack <pack_id>` | Add a product pack to the watchlist. |
 | `!report` | Show current stock summary by status. |
@@ -259,6 +262,8 @@ Examples:
 !watch_pack unifi_msp
 !report
 !list
+!unwatch 3
+!remove_sku UDM-SE
 !check
 !test_alert in_stock
 ```
@@ -277,6 +282,16 @@ Add the pack:
 
 ```text
 !watch_pack unifi_msp
+```
+
+Remove entries later:
+
+```text
+!list
+!unwatch 2
+!remove_sku UDM-SE
+!unwatch_pack unifi_msp
+!clear_watches confirm
 ```
 
 Run a live scrape and then show a summary:

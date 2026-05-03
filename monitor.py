@@ -191,8 +191,89 @@ class StockMonitor:
             return f"🗑️ Removed from watchlist: {url}"
         return f"⚠️ URL not found in watchlist: {url}"
 
+    def remove_product_by_index(self, index: int) -> str:
+        if index < 1 or index > len(self.watchlist):
+            return f"⚠️ Watch index out of range: {index}"
+
+        product = self.watchlist.pop(index - 1)
+        self._save_watchlist()
+        label = product.get("sku") or product.get("name") or product["url"]
+        return f"🗑️ Removed watch `{index}`: **{label}**"
+
+    def remove_products_by_pack(self, pack_id: str) -> str:
+        pack_id = pack_id.strip().lower()
+        before = len(self.watchlist)
+        self.watchlist = [p for p in self.watchlist if p.get("pack", "").lower() != pack_id]
+        removed = before - len(self.watchlist)
+        if removed:
+            self._save_watchlist()
+            return f"🗑️ Removed {removed} watch entries from pack `{pack_id}`."
+        return f"⚠️ No watch entries found for pack `{pack_id}`."
+
+    def remove_products_by_sku(self, sku: str) -> str:
+        sku = sku.strip().lower()
+        before = len(self.watchlist)
+        self.watchlist = [p for p in self.watchlist if str(p.get("sku", "")).lower() != sku]
+        removed = before - len(self.watchlist)
+        if removed:
+            self._save_watchlist()
+            return f"🗑️ Removed {removed} watch entries for SKU `{sku.upper()}`."
+        return f"⚠️ No watch entries found for SKU `{sku.upper()}`."
+
+    def clear_watchlist(self) -> str:
+        removed = len(self.watchlist)
+        self.watchlist = []
+        self._save_watchlist()
+        return f"🗑️ Cleared watchlist. Removed {removed} entries."
+
     def get_watchlist(self) -> list[dict]:
         return self.watchlist
+
+    def build_watchlist_embeds(self) -> list[discord.Embed]:
+        if not self.watchlist:
+            embed = discord.Embed(title="Watchlist", description="📭 No products currently being monitored.", color=0x99AAB5)
+            return [embed]
+
+        embeds: list[discord.Embed] = []
+        chunk_size = 8
+        total = len(self.watchlist)
+        counts = {"in_stock": 0, "low_stock": 0, "out_of_stock": 0, "unknown": 0}
+        for product in self.watchlist:
+            counts[product.get("last_status", "unknown") if product.get("last_status", "unknown") in counts else "unknown"] += 1
+
+        for start in range(0, total, chunk_size):
+            page = start // chunk_size + 1
+            embed = discord.Embed(
+                title="Watchlist",
+                description=(
+                    f"Entries: **{total}** · In Stock: **{counts['in_stock']}** · "
+                    f"Low Stock: **{counts['low_stock']}** · Out: **{counts['out_of_stock']}** · Unknown: **{counts['unknown']}**"
+                ),
+                color=0x5865F2,
+                timestamp=datetime.now(timezone.utc),
+            )
+            embed.set_author(name="Tracker Network Stock Bot")
+
+            for idx, product in enumerate(self.watchlist[start:start + chunk_size], start + 1):
+                status = product.get("last_status", "unknown")
+                emoji = STATUS_EMOJI.get(status, "⚪")
+                sku = product.get("sku") or product.get("name") or product["url"]
+                vendor = product.get("vendor") or SITE_NAMES.get(product.get("site"), product.get("site", "unknown"))
+                pack = f" · pack `{product['pack']}`" if product.get("pack") else ""
+                price = f" · {product['last_price']}" if product.get("last_price") else ""
+                embed.add_field(
+                    name=f"{idx}. {emoji} {sku}",
+                    value=(
+                        f"Vendor: `{vendor}` · Site: `{product['site']}`{pack}{price}\n"
+                        f"[Open product page]({product['url']})"
+                    ),
+                    inline=False,
+                )
+
+            embed.set_footer(text=f"Page {page}/{(total + chunk_size - 1) // chunk_size} · Remove: !unwatch <index>|<url>")
+            embeds.append(embed)
+
+        return embeds
 
     def _load_product_packs(self) -> dict[str, dict]:
         packs: dict[str, dict] = {}

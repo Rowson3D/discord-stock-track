@@ -51,34 +51,39 @@ async def watch(ctx, url: str):
 
 
 @bot.command(name="unwatch")
-async def unwatch(ctx, url: str):
-    """Remove a product URL from the watchlist. Usage: !unwatch <url>"""
-    result = bot.monitor.remove_product(url)
+async def unwatch(ctx, target: str):
+    """Remove a watch by list index or exact URL. Usage: !unwatch <index|url>"""
+    result = bot.monitor.remove_product_by_index(int(target)) if target.isdigit() else bot.monitor.remove_product(target)
     await ctx.send(result)
+
+
+@bot.command(name="unwatch_pack")
+async def unwatch_pack(ctx, pack_id: str):
+    """Remove all watch entries for a product pack. Usage: !unwatch_pack <pack_id>"""
+    await ctx.send(bot.monitor.remove_products_by_pack(pack_id))
+
+
+@bot.command(name="remove_sku")
+async def remove_sku(ctx, sku: str):
+    """Remove all watch entries for a SKU. Usage: !remove_sku <sku>"""
+    await ctx.send(bot.monitor.remove_products_by_sku(sku))
+
+
+@bot.command(name="clear_watches")
+async def clear_watches(ctx, confirm: str | None = None):
+    """Clear the watchlist. Usage: !clear_watches confirm"""
+    if confirm != "confirm":
+        await ctx.send("⚠️ Confirm full watchlist removal with: `!clear_watches confirm`")
+        return
+
+    await ctx.send(bot.monitor.clear_watchlist())
 
 
 @bot.command(name="list")
 async def list_products(ctx):
     """List all currently monitored products."""
-    products = bot.monitor.get_watchlist()
-    if not products:
-        await ctx.send("📭 No products currently being monitored.")
-        return
-
-    lines = ["**📋 Currently Monitoring:**\n"]
-    for i, p in enumerate(products, 1):
-        status = p.get("last_status", "unknown")
-        emoji = {"in_stock": "🟢", "out_of_stock": "🔴", "low_stock": "🟡", "unknown": "⚪"}.get(status, "⚪")
-        label = p.get("sku") or p["name"]
-        vendor = p.get("vendor") or p["site"]
-        pack = f" · Pack: `{p['pack']}`" if p.get("pack") else ""
-        lines.append(
-            f"`{i}.` {emoji} **{label}**\n"
-            f"    {p['url']}\n"
-            f"    Site: `{p['site']}` · Vendor: `{vendor}`{pack}\n"
-        )
-
-    await ctx.send("\n".join(lines))
+    for embed in bot.monitor.build_watchlist_embeds():
+        await ctx.send(embed=embed)
 
 
 @bot.command(name="packs")
@@ -145,8 +150,11 @@ async def help_stock(ctx):
         color=0x5865F2
     )
     embed.add_field(name="!watch <url>", value="Add a product URL to monitor", inline=False)
-    embed.add_field(name="!unwatch <url>", value="Remove a product URL", inline=False)
-    embed.add_field(name="!list", value="Show all monitored products", inline=False)
+    embed.add_field(name="!unwatch <index|url>", value="Remove a watch by list number or exact URL", inline=False)
+    embed.add_field(name="!unwatch_pack <pack_id>", value="Remove all entries for a product pack", inline=False)
+    embed.add_field(name="!remove_sku <sku>", value="Remove all entries for a SKU", inline=False)
+    embed.add_field(name="!clear_watches confirm", value="Clear the entire watchlist", inline=False)
+    embed.add_field(name="!list", value="Show watchlist in paged embeds", inline=False)
     embed.add_field(name="!packs", value="Show available product packs", inline=False)
     embed.add_field(name="!watch_pack <pack_id>", value="Add a product pack to monitor", inline=False)
     embed.add_field(name="!report", value="Show current stock summary", inline=False)
