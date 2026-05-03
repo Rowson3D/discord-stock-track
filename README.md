@@ -152,6 +152,20 @@ The service is configured to restart automatically after failures and on machine
 
 ## Docker on Linux
 
+Fresh clone quick start:
+```bash
+git clone <your-repo-url>
+cd tracker-network-stock
+./scripts/docker_setup.sh
+```
+
+If running non-interactively:
+```bash
+export DISCORD_BOT_TOKEN="your-token"
+export DISCORD_CHANNEL_ID="123456789012345678"
+./scripts/docker_setup.sh
+```
+
 Build image:
 ```bash
 docker build -t tracker-network-stock:latest .
