@@ -251,14 +251,20 @@ async def checkout(ctx, index: int):
 
 
 @bot.command(name="checkout_test")
-async def checkout_test(ctx, index: int):
-    """Run a no-charge checkout readiness test. Usage: !checkout_test <index>"""
+async def checkout_test(ctx, index: int, depth: str = "page"):
+    """Run a checkout readiness test. Usage: !checkout_test <index> [page|cart]"""
     if not _checkout_authorized(ctx):
         await ctx.send("⚠️ You are not allowed to test checkout.")
         return
 
-    await ctx.send(f"🔎 Running no-charge checkout test for watch `{index}`...")
-    result = await bot.monitor.test_checkout_by_index(index)
+    depth = depth.strip().lower()
+    if depth not in {"page", "cart"}:
+        await ctx.send("⚠️ Checkout test depth must be `page` or `cart`.")
+        return
+
+    action = "cart-depth" if depth == "cart" else "no-click"
+    await ctx.send(f"🔎 Running {action} checkout test for watch `{index}`...")
+    result = await bot.monitor.test_checkout_by_index(index, depth)
     await ctx.send(result)
 
 
@@ -296,7 +302,7 @@ async def help_stock(ctx):
     embed.add_field(name="!check", value="Force an immediate check now", inline=False)
     embed.add_field(name="!cleanup_now", value="Delete old bot messages using cleanup settings", inline=False)
     embed.add_field(name="!checkout_config <index> <on|off> [qty] [max_qty] [max_unit] [max_order]", value="Configure guarded checkout for a watch", inline=False)
-    embed.add_field(name="!checkout_test <index>", value="No-charge checkout readiness test", inline=False)
+    embed.add_field(name="!checkout_test <index> [page|cart]", value="Checkout readiness test; cart depth stops before checkout/payment", inline=False)
     embed.add_field(name="!checkout <index>", value="Run guarded checkout now for a watch", inline=False)
     embed.add_field(name="!test_alert [status]", value="Send a simulated alert embed after 15 seconds", inline=False)
     embed.add_field(

@@ -81,13 +81,17 @@ def run_checkout(product: dict, scrape_result: dict | None = None, force: bool =
     return result
 
 
-def test_checkout(product: dict) -> dict:
+def test_checkout(product: dict, depth: str = "page") -> dict:
+    depth = depth.strip().lower()
+    if depth not in {"page", "cart"}:
+        return _result("blocked", "Checkout test depth must be `page` or `cart`.")
+
     site = product.get("site")
     if site not in SUPPORTED_SITES:
         return _result("skipped", f"Checkout test not supported for `{site}` yet.")
 
     if site == "ui.com":
-        return _test_ui_checkout(product)
+        return _test_ui_checkout(product, depth)
 
     return _result("skipped", f"Checkout test not implemented for `{site}`.")
 
@@ -126,7 +130,7 @@ def _run_ui_checkout(product: dict, quantity: int, mode: str) -> dict:
                 browser.close()
 
 
-def _test_ui_checkout(product: dict) -> dict:
+def _test_ui_checkout(product: dict, depth: str) -> dict:
     profile_dir = Path(CONFIG["checkout"]["browser_profile_dir"]).expanduser().resolve()
     profile_dir.mkdir(parents=True, exist_ok=True)
     headless = bool(CONFIG["checkout"].get("headless", True))
@@ -149,6 +153,14 @@ def _test_ui_checkout(product: dict) -> dict:
             add_to_cart = _add_to_cart_locator(page)
             add_to_cart.wait_for(state="visible", timeout=15000)
             title = page.locator("h1").first.inner_text(timeout=5000).strip()
+            if depth == "cart":
+                quantity = _bounded_quantity(product, {})
+                _set_quantity_if_present(page, quantity)
+                add_to_cart.click(timeout=15000)
+                checkout = _checkout_locator(page)
+                checkout.wait_for(state="visible", timeout=15000)
+                return _result("ok", f"Cart-depth test passed for `{title or product.get('name')}`. Added `{quantity}` to cart and saw checkout control. Did not click checkout or place order.")
+
             return _result("ok", f"No-charge test passed. Add-to-cart visible for `{title or product.get('name')}`. Nothing clicked.")
     except Exception as exc:
         logger.exception("Checkout test failed for %s", product.get("url"))
@@ -228,6 +240,15 @@ def _open_cart_or_checkout(page) -> None:
     with suppress(Exception):
         page.goto("https://store.ui.com/us/en/cart", wait_until="networkidle", timeout=15000)
         return
+
+
+def _checkout_locator(page):
+    candidates = [
+        page.get_by_role("button", name=re.compile(r"checkout|secure checkout|proceed", re.I)).first,
+        page.get_by_role("link", name=re.compile(r"checkout|secure checkout|proceed", re.I)).first,
+        page.locator("button, a").filter(has_text=re.compile(r"checkout|secure checkout|proceed", re.I)).first,
+    ]
+    return candidates[0].or_(candidates[1]).or_(candidates[2]).first
 
 
 def _product_checkout(product: dict) -> dict:

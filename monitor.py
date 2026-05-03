@@ -261,13 +261,13 @@ class StockMonitor:
         self._save_watchlist()
         return f"{result['status']}: {result['message']}"
 
-    async def test_checkout_by_index(self, index: int) -> str:
+    async def test_checkout_by_index(self, index: int, depth: str = "page") -> str:
         if index < 1 or index > len(self.watchlist):
             return f"⚠️ Watch index out of range: {index}"
 
         product = self.watchlist[index - 1]
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(None, test_checkout, product)
+        result = await loop.run_in_executor(None, test_checkout, product, depth)
         return f"{result['status']}: {result['message']}"
 
     def build_watchlist_embeds(self) -> list[discord.Embed]:

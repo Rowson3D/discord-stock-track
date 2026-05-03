@@ -119,11 +119,13 @@ Discord commands:
 
 ```text
 !checkout_config <index> <on|off> [qty] [max_qty] [max_unit] [max_order]
-!checkout_test <index>
+!checkout_test <index> [page|cart]
 !checkout <index>
 ```
 
 Use `!checkout_test <index>` first. It loads the product page with the saved browser profile, confirms the add-to-cart button is visible, and exits without clicking add-to-cart, checkout, payment, or place-order controls.
+
+Use `!checkout_test <index> cart` for a deeper no-charge test. It clicks Add to Cart, verifies a checkout control is visible, and stops before clicking checkout, payment, or place-order controls. The item may remain in the retailer cart.
 
 Example:
 
