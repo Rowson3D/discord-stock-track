@@ -49,6 +49,11 @@ def detect_site(url: str) -> str | None:
     return None
 
 
+# How many times to retry a scrape that returns "unknown" before accepting it
+SCRAPE_RETRIES = 2
+RETRY_DELAY = 3  # seconds between retries
+
+
 class StockMonitor:
     def __init__(self, bot):
         self.bot = bot
@@ -56,6 +61,8 @@ class StockMonitor:
         self.watchlist_file = Path(CONFIG["watchlist_file"]).expanduser().resolve()
         # Track last check time per URL for per-site interval logic
         self._last_checked: dict[str, float] = {}
+        # Track consecutive "unknown" results per URL for diagnostics
+        self._consecutive_unknowns: dict[str, int] = {}
 
     # ── Watchlist persistence ──────────────────────────────────────
 
@@ -170,15 +177,28 @@ class StockMonitor:
 
             self._last_checked[url] = now
 
-            try:
-                result = await asyncio.get_event_loop().run_in_executor(
-                    None, scrape, url, site
-                )
-            except Exception as e:
-                logger.error(f"Scrape error for {url}: {e}")
-                continue
+            # Scrape with retries — if we get "unknown", try again before giving up
+            result = None
+            for attempt in range(1, SCRAPE_RETRIES + 1):
+                try:
+                    loop = asyncio.get_running_loop()
+                    result = await loop.run_in_executor(None, scrape, url, site)
+                except Exception as e:
+                    logger.error(f"Scrape error for {url} (attempt {attempt}): {e}")
+                    result = None
+                    continue
 
-            result = self._normalize_result(result)
+                result = self._normalize_result(result)
+                if result.get("status", "unknown") != "unknown":
+                    break  # Got a definitive result, stop retrying
+
+                if attempt < SCRAPE_RETRIES:
+                    logger.info(f"[{site}] {product['name']}: got 'unknown', retrying ({attempt}/{SCRAPE_RETRIES})...")
+                    await asyncio.sleep(RETRY_DELAY)
+
+            if result is None:
+                logger.error(f"All scrape attempts failed for {url}")
+                continue
 
             new_status = result.get("status", "unknown")
             old_status = product.get("last_status", "unknown")
@@ -187,15 +207,37 @@ class StockMonitor:
             if result.get("name") and result["name"] != url:
                 product["name"] = result["name"]
 
+            # ── CRITICAL: Don't overwrite a known status with "unknown" ──
+            # "unknown" means the scraper couldn't determine status (page load
+            # failure, anti-bot block, parsing failure). Overwriting a known
+            # state like "out_of_stock" with "unknown" destroys the state
+            # machine and causes missed "back in stock" alerts.
+            if new_status == "unknown":
+                self._consecutive_unknowns[url] = self._consecutive_unknowns.get(url, 0) + 1
+                count = self._consecutive_unknowns[url]
+                if count <= 3 or count % 10 == 0:
+                    logger.warning(
+                        f"[{site}] {product['name']}: scraper returned 'unknown' "
+                        f"({count} consecutive). Keeping previous status '{old_status}'."
+                    )
+                continue  # Skip status update and alert logic entirely
+
+            # Reset consecutive unknown counter on successful scrape
+            self._consecutive_unknowns[url] = 0
+
             logger.info(f"[{site}] {product['name']}: {old_status} → {new_status}")
 
             should_alert = self._should_alert(old_status, new_status)
 
             if should_alert:
                 embed = self._build_embed(product, result, old_status, new_status)
-                await channel.send(embed=embed)
+                try:
+                    await channel.send(embed=embed)
+                    logger.info(f"🔔 Alert sent for {product['name']}: {old_status} → {new_status}")
+                except discord.DiscordException as e:
+                    logger.error(f"Failed to send alert for {product['name']}: {e}")
 
-            # Update stored state
+            # Update stored state (only reached for definitive statuses)
             product["last_status"] = new_status
             if new_status == "in_stock":
                 product["last_seen_in_stock"] = time.strftime("%Y-%m-%d %H:%M:%S")

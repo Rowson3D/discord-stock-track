@@ -5,6 +5,7 @@ Status values: "in_stock" | "out_of_stock" | "low_stock" | "unknown"
 """
 import re
 import logging
+from contextlib import suppress
 import requests
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
@@ -43,11 +44,72 @@ def _get(url: str, timeout: int = 15) -> requests.Response | None:
         return None
 
 
+def _classify_ubiquiti_text(text: str) -> tuple[str, int | None]:
+    text = re.sub(r"\s+", " ", text.lower())
+
+    if any(phrase in text for phrase in ("add to cart", "add to bag")):
+        return "in_stock", None
+
+    qty_match = re.search(r"only\s+(\d+)\s+left", text)
+    if qty_match:
+        return "low_stock", int(qty_match.group(1))
+
+    if any(phrase in text for phrase in ("low stock", "limited stock", "few left")):
+        return "low_stock", None
+
+    if any(
+        phrase in text
+        for phrase in (
+            "sold out",
+            "out of stock",
+            "notify me",
+            "subscribe to back in stock",
+            "back in stock emails",
+            "not available",
+            "unavailable",
+        )
+    ):
+        return "out_of_stock", None
+
+    if re.search(r"(?<!back )in stock", text):
+        return "in_stock", None
+
+    return "unknown", None
+
+
+def _scrape_ubiquiti_http(url: str) -> dict:
+    result = {"status": "unknown", "quantity": None, "price": None, "name": None}
+    resp = _get(url)
+    if not resp:
+        return result
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    title_el = soup.select_one("meta[property='og:title'], meta[name='twitter:title']")
+    if title_el and title_el.get("content"):
+        result["name"] = title_el["content"].strip()
+    else:
+        for heading in soup.find_all("h1"):
+            title = heading.get_text(strip=True)
+            if title and title.lower() not in {"company", "stay in touch"}:
+                result["name"] = title
+                break
+
+    price_match = re.search(r"\$\s?\d+(?:\.\d{2})?", soup.get_text(" "))
+    if price_match:
+        result["price"] = price_match.group(0).replace(" ", "")
+
+    status, quantity = _classify_ubiquiti_text(soup.get_text(" "))
+    result["status"] = status
+    result["quantity"] = quantity
+    return result
+
+
 # ─────────────────────────────────────────────
 # Ubiquiti  (ui.com) — requires Playwright (JS SPA)
 # ─────────────────────────────────────────────
 def scrape_ubiquiti(url: str) -> dict:
     result = {"status": "unknown", "quantity": None, "price": None, "name": None}
+    browser = None
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
@@ -67,26 +129,31 @@ def scrape_ubiquiti(url: str) -> dict:
             except Exception:
                 pass
 
-            page_text = page.content().lower()
-
-            # Out-of-stock signals
-            oos_phrases = ["out of stock", "sold out", "notify me", "not available", "unavailable"]
-            low_phrases = ["low stock", "limited stock", "only", "left in stock", "few left"]
-            in_stock_phrases = ["add to cart", "add to bag", "buy now", "in stock"]
-
-            if any(p in page_text for p in oos_phrases):
-                result["status"] = "out_of_stock"
-            elif any(p in page_text for p in low_phrases):
-                result["status"] = "low_stock"
-                qty_match = re.search(r'only\s+(\d+)\s+left', page_text)
-                if qty_match:
-                    result["quantity"] = int(qty_match.group(1))
-            elif any(p in page_text for p in in_stock_phrases):
-                result["status"] = "in_stock"
-
-            browser.close()
+            visible_text = page.locator("body").inner_text(timeout=5000)
+            status, quantity = _classify_ubiquiti_text(visible_text)
+            result["status"] = status
+            result["quantity"] = quantity
     except Exception as e:
         logger.error(f"Ubiquiti scrape error: {e}")
+        fallback = _scrape_ubiquiti_http(url)
+        if fallback.get("status") != "unknown":
+            logger.info("Ubiquiti HTTP fallback produced status '%s'", fallback["status"])
+            return fallback
+    finally:
+        if browser:
+            with suppress(Exception):
+                browser.close()
+
+    if result.get("status") != "unknown" and (
+        not result.get("price")
+        or not result.get("name")
+        or result["name"].lower() in {"company", "stay in touch"}
+    ):
+        fallback = _scrape_ubiquiti_http(url)
+        if fallback.get("name") and fallback["name"].lower() not in {"company", "stay in touch"}:
+            result["name"] = fallback["name"]
+        if fallback.get("price"):
+            result["price"] = fallback["price"]
 
     return result
 

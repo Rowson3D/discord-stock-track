@@ -1,0 +1,16 @@
+services:
+  stock-bot:
+    build: .
+    image: tracker-network-stock:latest
+    container_name: tracker-network-stock
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      STOCK_BOT_DATA_DIR: /data
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - stock-bot-data:/data
+
+volumes:
+  stock-bot-data:

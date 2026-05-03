@@ -132,6 +132,14 @@ sudo sed -n '1,10p' /etc/tracker-network-stock/bot.env
 ./.venv/bin/python bot.py
 ```
 
+Stock triage for the default travel router:
+```bash
+python scripts/triage_stock.py
+python scripts/triage_stock.py --old-status out_of_stock --simulate-new-status in_stock
+```
+
+The triage output shows whether Playwright Chromium is installed, the current scraper result, and whether the monitor would send a Discord alert for the tested transition.
+
 Common failure patterns:
 - `bad-setting`: the unit file is malformed or still contains env-file contents instead of `[Unit]` / `[Service]` sections.
 - Immediate exit on startup: `DISCORD_BOT_TOKEN` or `DISCORD_CHANNEL_ID` is missing or still a placeholder.
@@ -139,6 +147,52 @@ Common failure patterns:
 - Playwright launch failures: rerun `./.venv/bin/playwright install --with-deps chromium`.
 
 The service is configured to restart automatically after failures and on machine reboot.
+
+---
+
+## Docker on Linux
+
+Build image:
+```bash
+docker build -t tracker-network-stock:latest .
+```
+
+Create env file:
+```bash
+cp tracker-network-stock.env.example .env
+nano .env
+```
+
+Run with Docker Compose:
+```bash
+docker compose up -d --build
+docker compose logs -f stock-bot
+```
+
+Run without Compose:
+```bash
+docker volume create tracker-network-stock-data
+docker run -d \
+  --name tracker-network-stock \
+  --restart unless-stopped \
+  --env-file .env \
+  -e STOCK_BOT_DATA_DIR=/data \
+  -v tracker-network-stock-data:/data \
+  tracker-network-stock:latest
+```
+
+Triage inside container:
+```bash
+docker compose run --rm stock-bot python scripts/triage_stock.py
+docker compose run --rm stock-bot python scripts/triage_stock.py --old-status out_of_stock --simulate-new-status in_stock
+```
+
+Stop/remove:
+```bash
+docker compose down
+```
+
+The image installs Playwright Chromium during build, so Ubiquiti scraping works without a separate browser install on the host. Runtime watchlist data lives in the Docker volume mounted at `/data`.
 
 ---
 
