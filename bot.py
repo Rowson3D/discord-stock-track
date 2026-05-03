@@ -111,6 +111,15 @@ def _checkout_authorized(ctx) -> bool:
     return bool(allowed) and str(ctx.author.id) in allowed
 
 
+async def _send_chunks(ctx, message: str, limit: int = 1900):
+    if len(message) <= limit:
+        await ctx.send(message)
+        return
+
+    for start in range(0, len(message), limit):
+        await ctx.send(message[start:start + limit])
+
+
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user} ({bot.user.id})")
@@ -265,7 +274,7 @@ async def checkout_test(ctx, index: int, depth: str = "page"):
     action = "cart-depth" if depth == "cart" else "no-click"
     await ctx.send(f"🔎 Running {action} checkout test for watch `{index}`...")
     result = await bot.monitor.test_checkout_by_index(index, depth)
-    await ctx.send(result)
+    await _send_chunks(ctx, result)
 
 
 @bot.command(name="test_alert")

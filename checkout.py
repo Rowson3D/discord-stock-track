@@ -158,13 +158,20 @@ def _test_ui_checkout(product: dict, depth: str) -> dict:
                 _set_quantity_if_present(page, quantity)
                 add_to_cart.click(timeout=15000)
                 checkout = _checkout_locator(page)
-                checkout.wait_for(state="visible", timeout=15000)
+                try:
+                    checkout.wait_for(state="visible", timeout=15000)
+                except Exception as exc:
+                    diagnostics = _checkout_diagnostics(page, "checkout-control-missing")
+                    return _result("error", f"Cart-depth test added `{quantity}` to cart, but checkout control was not visible. Did not click checkout/place order. {diagnostics} Raw: {exc}")
                 return _result("ok", f"Cart-depth test passed for `{title or product.get('name')}`. Added `{quantity}` to cart and saw checkout control. Did not click checkout or place order.")
 
             return _result("ok", f"No-charge test passed. Add-to-cart visible for `{title or product.get('name')}`. Nothing clicked.")
     except Exception as exc:
         logger.exception("Checkout test failed for %s", product.get("url"))
-        return _result("error", f"No-charge test failed: {exc}")
+        diagnostics = ""
+        with suppress(Exception):
+            diagnostics = _checkout_diagnostics(page, "checkout-test-error")
+        return _result("error", f"No-charge test failed: {exc} {diagnostics}".strip())
     finally:
         if browser:
             with suppress(Exception):
@@ -246,9 +253,77 @@ def _checkout_locator(page):
     candidates = [
         page.get_by_role("button", name=re.compile(r"checkout|secure checkout|proceed", re.I)).first,
         page.get_by_role("link", name=re.compile(r"checkout|secure checkout|proceed", re.I)).first,
-        page.locator("button, a").filter(has_text=re.compile(r"checkout|secure checkout|proceed", re.I)).first,
+        page.locator("button, a").filter(has_text=re.compile(r"checkout|secure checkout|proceed|continue", re.I)).first,
+        page.locator("[data-testid*='checkout' i], [href*='checkout' i], [aria-label*='checkout' i]").first,
     ]
-    return candidates[0].or_(candidates[1]).or_(candidates[2]).first
+    return candidates[0].or_(candidates[1]).or_(candidates[2]).or_(candidates[3]).first
+
+
+def _checkout_diagnostics(page, reason: str) -> str:
+    timestamp = int(time.time())
+    safe_reason = re.sub(r"[^a-z0-9_-]+", "-", reason.lower()).strip("-") or "checkout"
+    screenshot_dir = Path(CONFIG["checkout"]["browser_profile_dir"]).expanduser().resolve().parent / "checkout-diagnostics"
+    screenshot_dir.mkdir(parents=True, exist_ok=True)
+    screenshot_path = screenshot_dir / f"{safe_reason}-{timestamp}.png"
+    with suppress(Exception):
+        page.screenshot(path=str(screenshot_path), full_page=True)
+
+    title = _safe_page_title(page)
+    url = page.url
+    controls = _visible_control_text(page)
+    terms = _matching_page_terms(page)
+    return (
+        f"Diagnostics: title=`{title}` url=`{url}` terms=`{', '.join(terms) or 'none'}` "
+        f"controls=`{'; '.join(controls) or 'none'}` screenshot=`{screenshot_path}`"
+    )
+
+
+def _safe_page_title(page) -> str:
+    with suppress(Exception):
+        title = page.locator("h1").first.inner_text(timeout=2000).strip()
+        if title:
+            return title[:120]
+    with suppress(Exception):
+        return page.title()[:120]
+    return "unknown"
+
+
+def _visible_control_text(page) -> list[str]:
+    script = r"""
+    els => els
+      .filter(e => {
+        const r = e.getBoundingClientRect();
+        const s = window.getComputedStyle(e);
+        return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+      })
+      .map(e => (e.innerText || e.getAttribute('aria-label') || e.getAttribute('title') || e.textContent || '').trim().replace(/\s+/g, ' '))
+      .filter(Boolean)
+      .slice(0, 20)
+    """
+    with suppress(Exception):
+        return page.locator("button, a").evaluate_all(script)
+    return []
+
+
+def _matching_page_terms(page) -> list[str]:
+    text = page.locator("body").inner_text(timeout=5000).lower()
+    terms = []
+    for phrase in (
+        "add to cart",
+        "added to cart",
+        "view cart",
+        "cart",
+        "checkout",
+        "secure checkout",
+        "proceed",
+        "continue",
+        "sold out",
+        "out of stock",
+        "notify me",
+    ):
+        if phrase in text:
+            terms.append(phrase)
+    return terms
 
 
 def _product_checkout(product: dict) -> dict:
