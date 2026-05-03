@@ -28,12 +28,15 @@ def checkout_enabled_for(product: dict) -> bool:
 
 def checkout_summary(product: dict) -> str:
     checkout = _product_checkout(product)
-    enabled = "on" if checkout_enabled_for(product) else "off"
+    product_enabled = bool(checkout.get("enabled", True))
+    global_enabled = bool(CONFIG["checkout"].get("enabled"))
+    enabled = "on" if product_enabled else "off"
+    global_state = "on" if global_enabled else "off"
     quantity = _bounded_quantity(product, {})
     cooldown = int(checkout.get("cooldown_hours", CONFIG["checkout"].get("default_cooldown_hours", 24)))
     max_unit = checkout.get("max_unit_price", "unset")
     max_order = checkout.get("max_order_total", CONFIG["checkout"].get("max_order_total") or "unset")
-    return f"checkout `{enabled}` · qty `{quantity}` · max unit `{max_unit}` · max order `{max_order}` · cooldown `{cooldown}h`"
+    return f"checkout `{enabled}` · global `{global_state}` · qty `{quantity}` · max unit `{max_unit}` · max order `{max_order}` · cooldown `{cooldown}h`"
 
 
 def run_checkout(product: dict, scrape_result: dict | None = None, force: bool = False) -> dict:
