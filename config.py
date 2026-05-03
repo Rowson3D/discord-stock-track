@@ -87,6 +87,7 @@ CONFIG = {
         "headless": _get_bool_env("CHECKOUT_HEADLESS", True),
         "browser_profile_dir": os.getenv("CHECKOUT_BROWSER_PROFILE_DIR", str(DATA_DIR / "playwright-profile")),
         "allowed_approvers": _get_list_env("CHECKOUT_ALLOWED_APPROVERS"),
+        "require_allowed_approvers": _get_bool_env("CHECKOUT_REQUIRE_ALLOWED_APPROVERS", True),
         "max_order_total": _get_float_env("CHECKOUT_MAX_ORDER_TOTAL"),
         "require_price_match": _get_bool_env("CHECKOUT_REQUIRE_PRICE_MATCH", True),
         "default_quantity": _get_int_env("CHECKOUT_DEFAULT_QUANTITY", 1),
@@ -99,6 +100,8 @@ CONFIG = {
         "ttl_minutes": _get_int_env("MESSAGE_CLEANUP_TTL_MINUTES", 60),
         "interval_minutes": _get_int_env("MESSAGE_CLEANUP_INTERVAL_MINUTES", 10),
         "scan_limit": _get_int_env("MESSAGE_CLEANUP_SCAN_LIMIT", 200),
+        "max_deletes_per_run": _get_int_env("MESSAGE_CLEANUP_MAX_DELETES_PER_RUN", 25),
+        "delete_delay_seconds": _get_float_env("MESSAGE_CLEANUP_DELETE_DELAY_SECONDS", 1.25),
         "delete_user_commands": _get_bool_env("MESSAGE_CLEANUP_DELETE_USER_COMMANDS", False),
     },
 

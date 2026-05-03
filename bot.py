@@ -67,10 +67,14 @@ class StockBot(commands.Bot):
         ttl_minutes = max(1, int(cleanup.get("ttl_minutes", 60)))
         cutoff = discord.utils.utcnow() - timedelta(minutes=ttl_minutes)
         scan_limit = max(1, int(cleanup.get("scan_limit", 200)))
+        max_deletes = max(1, int(cleanup.get("max_deletes_per_run", 25)))
+        delete_delay = max(0.5, float(cleanup.get("delete_delay_seconds", 1.25)))
         delete_user_commands = bool(cleanup.get("delete_user_commands", False))
         deleted = 0
 
         async for message in channel.history(limit=scan_limit):
+            if deleted >= max_deletes:
+                break
             if message.created_at > cutoff:
                 continue
             if message.pinned:
@@ -81,7 +85,7 @@ class StockBot(commands.Bot):
             try:
                 await message.delete()
                 deleted += 1
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(delete_delay)
             except discord.Forbidden:
                 continue
             except discord.NotFound:
@@ -104,7 +108,7 @@ bot = StockBot()
 
 def _checkout_authorized(ctx) -> bool:
     allowed = CONFIG.get("checkout", {}).get("allowed_approvers") or []
-    return not allowed or str(ctx.author.id) in allowed
+    return bool(allowed) and str(ctx.author.id) in allowed
 
 
 @bot.event
@@ -118,6 +122,12 @@ async def watch(ctx, url: str):
     """Add a product URL to the watchlist. Usage: !watch <url>"""
     result = bot.monitor.add_product(url)
     await ctx.send(result)
+
+
+@bot.command(name="whoami")
+async def whoami(ctx):
+    """Show your Discord user ID for checkout approval config."""
+    await ctx.send(f"Your Discord user ID: `{ctx.author.id}`")
 
 
 @bot.command(name="unwatch")
@@ -274,6 +284,7 @@ async def help_stock(ctx):
         color=0x5865F2
     )
     embed.add_field(name="!watch <url>", value="Add a product URL to monitor", inline=False)
+    embed.add_field(name="!whoami", value="Show your Discord user ID for checkout approval config", inline=False)
     embed.add_field(name="!unwatch <index|url>", value="Remove a watch by list number or exact URL", inline=False)
     embed.add_field(name="!unwatch_pack <pack_id>", value="Remove all entries for a product pack", inline=False)
     embed.add_field(name="!remove_sku <sku>", value="Remove all entries for a SKU", inline=False)

@@ -23,6 +23,8 @@ SUPPORTED_MODES = {"cart_only", "review_only"}
 
 def checkout_enabled_for(product: dict) -> bool:
     checkout = _product_checkout(product)
+    if CONFIG["checkout"].get("require_allowed_approvers", True) and not CONFIG["checkout"].get("allowed_approvers"):
+        return False
     return bool(CONFIG["checkout"].get("enabled") and checkout.get("enabled", True))
 
 
@@ -30,13 +32,15 @@ def checkout_summary(product: dict) -> str:
     checkout = _product_checkout(product)
     product_enabled = bool(checkout.get("enabled", True))
     global_enabled = bool(CONFIG["checkout"].get("enabled"))
+    approvers_ready = bool(CONFIG["checkout"].get("allowed_approvers")) or not CONFIG["checkout"].get("require_allowed_approvers", True)
     enabled = "on" if product_enabled else "off"
     global_state = "on" if global_enabled else "off"
+    approver_state = "set" if approvers_ready else "missing"
     quantity = _bounded_quantity(product, {})
     cooldown = int(checkout.get("cooldown_hours", CONFIG["checkout"].get("default_cooldown_hours", 24)))
     max_unit = checkout.get("max_unit_price", "unset")
     max_order = checkout.get("max_order_total", CONFIG["checkout"].get("max_order_total") or "unset")
-    return f"checkout `{enabled}` · global `{global_state}` · qty `{quantity}` · max unit `{max_unit}` · max order `{max_order}` · cooldown `{cooldown}h`"
+    return f"checkout `{enabled}` · global `{global_state}` · approvers `{approver_state}` · qty `{quantity}` · max unit `{max_unit}` · max order `{max_order}` · cooldown `{cooldown}h`"
 
 
 def run_checkout(product: dict, scrape_result: dict | None = None, force: bool = False) -> dict:
