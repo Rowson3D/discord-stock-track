@@ -242,6 +242,7 @@ The example unit is [stock-bot.service.example](stock-bot.service.example).
 | `!unwatch <url>` | Remove a product URL from the watchlist. |
 | `!list` | Show monitored products and last known status. |
 | `!check` | Force an immediate stock check. |
+| `!test_alert [status]` | Send a simulated alert embed without changing watchlist state. |
 | `!help_stock` | Show bot command help. |
 
 Examples:
@@ -251,6 +252,7 @@ Examples:
 !watch https://www.amazon.com/dp/B0XXXXXXXX
 !list
 !check
+!test_alert in_stock
 ```
 
 ## Triage and Verification
@@ -285,6 +287,16 @@ Expected alert simulation for an available product:
   "would_send_discord_alert": true
 }
 ```
+
+Test the Discord UI from the target channel:
+
+```text
+!test_alert in_stock
+!test_alert low_stock
+!test_alert out_of_stock
+```
+
+The test command sends the same embed format as a real alert and does not update `last_status`.
 
 ## Data and Persistence
 

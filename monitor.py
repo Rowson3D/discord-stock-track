@@ -5,6 +5,7 @@ import json
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 from pathlib import Path
 
@@ -27,6 +28,13 @@ STATUS_COLOR = {
     "out_of_stock": 0xED4245,   # red
     "low_stock":    0xFEE75C,   # yellow
     "unknown":      0x99AAB5,   # grey
+}
+
+STATUS_LABEL = {
+    "in_stock":     "In Stock",
+    "out_of_stock": "Out of Stock",
+    "low_stock":    "Low Stock",
+    "unknown":      "Unknown",
 }
 
 SITE_NAMES = {
@@ -276,7 +284,7 @@ class StockMonitor:
 
     def _build_embed(self, product: dict, result: dict, old_status: str, new_status: str) -> discord.Embed:
         site = product["site"]
-        name = product["name"]
+        name = result.get("name") or product["name"]
         url = product["url"]
         price = result.get("price")
         quantity = result.get("quantity")
@@ -285,23 +293,25 @@ class StockMonitor:
         color = STATUS_COLOR.get(new_status, 0x99AAB5)
         site_name = SITE_NAMES.get(site, site)
 
-        # Title based on transition
         if old_status == "out_of_stock" and new_status in ("in_stock", "low_stock"):
-            title = f"🔔 BACK IN STOCK — {name}"
+            title = f"{emoji} Back In Stock"
         elif new_status == "in_stock":
-            title = f"🟢 IN STOCK — {name}"
+            title = f"{emoji} In Stock"
         elif new_status == "low_stock":
-            title = f"🟡 LOW STOCK WARNING — {name}"
+            title = f"{emoji} Low Stock"
         else:
-            title = f"{emoji} Stock Update — {name}"
+            title = f"{emoji} Stock Update"
 
         embed = discord.Embed(
             title=title,
+            description=f"**{name}**",
             url=url,
             color=color,
+            timestamp=datetime.now(timezone.utc),
         )
+        embed.set_author(name="Tracker Network Stock Bot")
         embed.add_field(name="Retailer", value=site_name, inline=True)
-        embed.add_field(name="Status", value=f"{emoji} {new_status.replace('_', ' ').title()}", inline=True)
+        embed.add_field(name="Status", value=f"{emoji} {STATUS_LABEL.get(new_status, new_status)}", inline=True)
 
         if price:
             embed.add_field(name="Price", value=price, inline=True)
@@ -312,11 +322,23 @@ class StockMonitor:
         if old_status != "unknown":
             embed.add_field(
                 name="Previous Status",
-                value=f"{STATUS_EMOJI.get(old_status, '⚪')} {old_status.replace('_', ' ').title()}",
+                value=f"{STATUS_EMOJI.get(old_status, '⚪')} {STATUS_LABEL.get(old_status, old_status)}",
                 inline=True,
             )
 
-        embed.add_field(name="🔗 Product Link", value=url, inline=False)
-        embed.set_footer(text=f"Stock Bot • {site_name} • {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        embed.add_field(name="Action", value=f"[Open product page]({url})", inline=False)
+        embed.set_footer(text=f"{site_name} stock monitor")
 
+        return embed
+
+    def build_test_embed(self, status: str = "in_stock") -> discord.Embed:
+        product = self.watchlist[0] if self.watchlist else CONFIG["default_products"][0]
+        result = {
+            "name": product.get("name") or "Test Product",
+            "price": "$79.00",
+            "quantity": 3 if status == "low_stock" else None,
+        }
+        old_status = "out_of_stock" if status in ("in_stock", "low_stock") else "in_stock"
+        embed = self._build_embed(product, result, old_status, status)
+        embed.add_field(name="Test Mode", value="Simulated alert. Watchlist state not changed.", inline=False)
         return embed

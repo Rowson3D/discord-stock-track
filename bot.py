@@ -82,6 +82,19 @@ async def force_check(ctx):
     await ctx.send("✅ Manual check complete.")
 
 
+@bot.command(name="test_alert")
+async def test_alert(ctx, status: str = "in_stock"):
+    """Send a simulated stock alert. Usage: !test_alert [in_stock|low_stock|out_of_stock]"""
+    status = status.lower()
+    valid_statuses = {"in_stock", "low_stock", "out_of_stock"}
+    if status not in valid_statuses:
+        await ctx.send("⚠️ Status must be one of: `in_stock`, `low_stock`, `out_of_stock`.")
+        return
+
+    embed = bot.monitor.build_test_embed(status)
+    await ctx.send(embed=embed)
+
+
 @bot.command(name="help_stock")
 async def help_stock(ctx):
     """Show help for the stock bot."""
@@ -93,6 +106,7 @@ async def help_stock(ctx):
     embed.add_field(name="!unwatch <url>", value="Remove a product URL", inline=False)
     embed.add_field(name="!list", value="Show all monitored products", inline=False)
     embed.add_field(name="!check", value="Force an immediate check now", inline=False)
+    embed.add_field(name="!test_alert [status]", value="Send a simulated alert embed", inline=False)
     embed.add_field(
         name="Supported Sites",
         value="• ui.com (Ubiquiti)\n• amazon.com\n• bhphotovideo.com\n• newegg.com",
