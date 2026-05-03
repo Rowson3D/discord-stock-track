@@ -93,6 +93,7 @@ CONFIG = {
         "default_quantity": _get_int_env("CHECKOUT_DEFAULT_QUANTITY", 1),
         "default_max_quantity": _get_int_env("CHECKOUT_DEFAULT_MAX_QUANTITY", 1),
         "default_cooldown_hours": _get_int_env("CHECKOUT_DEFAULT_COOLDOWN_HOURS", 24),
+        "test_timeout_seconds": _get_int_env("CHECKOUT_TEST_TIMEOUT_SECONDS", 90),
     },
 
     "message_cleanup": {

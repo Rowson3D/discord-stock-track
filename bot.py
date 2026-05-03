@@ -272,7 +272,8 @@ async def checkout_test(ctx, index: int, depth: str = "page"):
         return
 
     action = "cart-depth" if depth == "cart" else "no-click"
-    await ctx.send(f"🔎 Running {action} checkout test for watch `{index}`...")
+    timeout = max(15, int(CONFIG.get("checkout", {}).get("test_timeout_seconds", 90)))
+    await ctx.send(f"🔎 Running {action} checkout test for watch `{index}` (timeout `{timeout}s`)...")
     result = await bot.monitor.test_checkout_by_index(index, depth)
     await _send_chunks(ctx, result)
 

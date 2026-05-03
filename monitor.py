@@ -267,7 +267,14 @@ class StockMonitor:
 
         product = self.watchlist[index - 1]
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(None, test_checkout, product, depth)
+        timeout = max(15, int(CONFIG.get("checkout", {}).get("test_timeout_seconds", 90)))
+        try:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, test_checkout, product, depth),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            return f"timeout: Checkout test exceeded `{timeout}` seconds. Browser may still finish in background. Try `!checkout_test {index} page` or raise `CHECKOUT_TEST_TIMEOUT_SECONDS`."
         return f"{result['status']}: {result['message']}"
 
     def build_watchlist_embeds(self) -> list[discord.Embed]:
