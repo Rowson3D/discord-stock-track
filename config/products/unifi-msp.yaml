@@ -1,0 +1,124 @@
+id: unifi_msp
+name: UniFi MSP Core Gear
+description: Core UniFi gateways, switches, APs, cameras, and NVRs commonly sourced by MSPs and installers.
+products:
+  - sku: UDM-PRO
+    name: UniFi Dream Machine Pro
+    category: Gateways
+    priority: high
+    vendors:
+      - name: Ubiquiti Store
+        site: ui.com
+        url: https://store.ui.com/us/en/products/udm-pro
+  - sku: UDM-SE
+    name: UniFi Dream Machine Special Edition
+    category: Gateways
+    priority: high
+    vendors:
+      - name: Ubiquiti Store
+        site: ui.com
+        url: https://store.ui.com/us/en/products/udm-se
+  - sku: UCG-ULTRA
+    name: UniFi Cloud Gateway Ultra
+    category: Gateways
+    priority: high
+    vendors:
+      - name: Ubiquiti Store
+        site: ui.com
+        url: https://store.ui.com/us/en/products/ucg-ultra
+  - sku: UCG-MAX
+    name: UniFi Cloud Gateway Max
+    category: Gateways
+    priority: high
+    vendors:
+      - name: Ubiquiti Store
+        site: ui.com
+        url: https://store.ui.com/us/en/products/ucg-max
+  - sku: UNVR
+    name: UniFi Network Video Recorder
+    category: Video
+    priority: high
+    vendors:
+      - name: Ubiquiti Store
+        site: ui.com
+        url: https://store.ui.com/us/en/products/unvr
+  - sku: UNVR-PRO
+    name: UniFi Network Video Recorder Pro
+    category: Video
+    priority: high
+    vendors:
+      - name: Ubiquiti Store
+        site: ui.com
+        url: https://store.ui.com/us/en/products/unvr-pro
+  - sku: USW-PRO-24-POE
+    name: UniFi Pro 24 PoE Switch
+    category: Switching
+    priority: high
+    vendors:
+      - name: Ubiquiti Store
+        site: ui.com
+        url: https://store.ui.com/us/en/products/usw-pro-24-poe
+  - sku: USW-PRO-48-POE
+    name: UniFi Pro 48 PoE Switch
+    category: Switching
+    priority: high
+    vendors:
+      - name: Ubiquiti Store
+        site: ui.com
+        url: https://store.ui.com/us/en/products/usw-pro-48-poe
+  - sku: USW-AGGREGATION
+    name: UniFi Aggregation Switch
+    category: Switching
+    priority: normal
+    vendors:
+      - name: Ubiquiti Store
+        site: ui.com
+        url: https://store.ui.com/us/en/products/usw-aggregation
+  - sku: U7-PRO
+    name: UniFi U7 Pro Access Point
+    category: WiFi
+    priority: high
+    vendors:
+      - name: Ubiquiti Store
+        site: ui.com
+        url: https://store.ui.com/us/en/products/u7-pro
+  - sku: U7-PRO-MAX
+    name: UniFi U7 Pro Max Access Point
+    category: WiFi
+    priority: high
+    vendors:
+      - name: Ubiquiti Store
+        site: ui.com
+        url: https://store.ui.com/us/en/products/u7-pro-max
+  - sku: U6-ENTERPRISE
+    name: UniFi U6 Enterprise Access Point
+    category: WiFi
+    priority: normal
+    vendors:
+      - name: Ubiquiti Store
+        site: ui.com
+        url: https://store.ui.com/us/en/products/u6-enterprise
+  - sku: UVC-G5-BULLET
+    name: UniFi G5 Bullet Camera
+    category: Cameras
+    priority: normal
+    vendors:
+      - name: Ubiquiti Store
+        site: ui.com
+        url: https://store.ui.com/us/en/products/uvc-g5-bullet
+  - sku: UVC-G5-DOME
+    name: UniFi G5 Dome Camera
+    category: Cameras
+    priority: normal
+    vendors:
+      - name: Ubiquiti Store
+        site: ui.com
+        url: https://store.ui.com/us/en/products/uvc-g5-dome
+  - sku: UVC-AI-PRO
+    name: UniFi AI Pro Camera
+    category: Cameras
+    priority: normal
+    vendors:
+      - name: Ubiquiti Store
+        site: ui.com
+        url: https://store.ui.com/us/en/products/uvc-ai-pro

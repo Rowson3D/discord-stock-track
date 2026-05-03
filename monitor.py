@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from pathlib import Path
 
 import discord
+import yaml
 from config import CONFIG
 from scrapers import scrape
 
@@ -67,6 +68,7 @@ class StockMonitor:
         self.bot = bot
         self.watchlist: list[dict] = []
         self.watchlist_file = Path(CONFIG["watchlist_file"]).expanduser().resolve()
+        self.product_packs_dir = Path(CONFIG["product_packs_dir"]).expanduser().resolve()
         # Track last check time per URL for per-site interval logic
         self._last_checked: dict[str, float] = {}
         # Track consecutive "unknown" results per URL for diagnostics
@@ -135,6 +137,51 @@ class StockMonitor:
         self._save_watchlist()
         return f"✅ Now watching **{SITE_NAMES[site]}**: {url}"
 
+    def list_product_packs(self) -> list[dict]:
+        return list(self._load_product_packs().values())
+
+    def add_product_pack(self, pack_id: str) -> str:
+        pack_id = pack_id.strip().lower()
+        packs = self._load_product_packs()
+        pack = packs.get(pack_id)
+        if not pack:
+            available = ", ".join(sorted(packs)) or "none"
+            return f"⚠️ Product pack not found: `{pack_id}`. Available packs: {available}"
+
+        added = 0
+        skipped = 0
+        existing_urls = {p["url"] for p in self.watchlist}
+
+        for product in pack.get("products", []):
+            for vendor in product.get("vendors", []):
+                url = vendor.get("url", "").strip()
+                site = vendor.get("site") or detect_site(url)
+                if not url or not site or url in existing_urls:
+                    skipped += 1
+                    continue
+
+                self.watchlist.append(
+                    {
+                        "url": url,
+                        "name": product.get("name") or product.get("sku") or url,
+                        "site": site,
+                        "sku": product.get("sku"),
+                        "category": product.get("category"),
+                        "priority": product.get("priority", "normal"),
+                        "pack": pack["id"],
+                        "vendor": vendor.get("name") or SITE_NAMES.get(site, site),
+                        "last_status": "unknown",
+                        "last_seen_in_stock": None,
+                    }
+                )
+                existing_urls.add(url)
+                added += 1
+
+        if added:
+            self._save_watchlist()
+
+        return f"✅ Added {added} watch entries from **{pack['name']}**. Skipped {skipped}."
+
     def remove_product(self, url: str) -> str:
         url = url.strip()
         before = len(self.watchlist)
@@ -146,6 +193,89 @@ class StockMonitor:
 
     def get_watchlist(self) -> list[dict]:
         return self.watchlist
+
+    def _load_product_packs(self) -> dict[str, dict]:
+        packs: dict[str, dict] = {}
+        if not self.product_packs_dir.exists():
+            return packs
+
+        for path in sorted(self.product_packs_dir.glob("*.yaml")):
+            try:
+                with path.open(encoding="utf-8") as f:
+                    pack = yaml.safe_load(f) or {}
+            except Exception as e:
+                logger.error(f"Failed to load product pack {path}: {e}")
+                continue
+
+            pack_id = str(pack.get("id") or path.stem).strip().lower()
+            products = pack.get("products") or []
+            packs[pack_id] = {
+                "id": pack_id,
+                "name": pack.get("name") or pack_id,
+                "description": pack.get("description") or "",
+                "products": products,
+                "product_count": len(products),
+                "watch_entry_count": sum(len(product.get("vendors", [])) for product in products),
+            }
+
+        return packs
+
+    def build_report_embed(self) -> discord.Embed:
+        counts = {"in_stock": 0, "low_stock": 0, "out_of_stock": 0, "unknown": 0}
+        for product in self.watchlist:
+            status = product.get("last_status", "unknown")
+            counts[status if status in counts else "unknown"] += 1
+
+        embed = discord.Embed(
+            title="Stock Watch Report",
+            color=0x5865F2,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.set_author(name="Tracker Network Stock Bot")
+        embed.description = (
+            f"Tracking **{len(self.watchlist)}** vendor entries. "
+            f"Available now: **{counts['in_stock'] + counts['low_stock']}**."
+        )
+        embed.add_field(name="In Stock", value=str(counts["in_stock"]), inline=True)
+        embed.add_field(name="Low Stock", value=str(counts["low_stock"]), inline=True)
+        embed.add_field(name="Out of Stock", value=str(counts["out_of_stock"]), inline=True)
+        embed.add_field(name="Unknown", value=str(counts["unknown"]), inline=True)
+
+        available = [
+            product for product in self.watchlist
+            if product.get("last_status") in ("in_stock", "low_stock")
+        ]
+        if available:
+            embed.add_field(
+                name="Available Entries",
+                value=self._format_report_lines(available[:8]),
+                inline=False,
+            )
+
+        priority = [
+            product for product in self.watchlist
+            if product.get("priority") == "high" and product.get("last_status") in ("out_of_stock", "unknown")
+        ]
+        if priority:
+            embed.add_field(
+                name="High Priority Waiting",
+                value=self._format_report_lines(priority[:8]),
+                inline=False,
+            )
+
+        embed.set_footer(text="Use !check for live scrape, !watch_pack for SKU packs")
+        return embed
+
+    def _format_report_lines(self, products: list[dict]) -> str:
+        lines = []
+        for product in products:
+            status = product.get("last_status", "unknown")
+            emoji = STATUS_EMOJI.get(status, "⚪")
+            sku = product.get("sku") or product.get("name") or "Unknown SKU"
+            vendor = product.get("vendor") or SITE_NAMES.get(product.get("site"), product.get("site", "unknown"))
+            price = f" · {product['last_price']}" if product.get("last_price") else ""
+            lines.append(f"{emoji} [{sku}]({product['url']}) · {vendor}{price}")
+        return "\n".join(lines)[:1024]
 
     # ── Polling loop ───────────────────────────────────────────────
 
@@ -214,6 +344,12 @@ class StockMonitor:
             # Update name if we got one
             if result.get("name") and result["name"] != url:
                 product["name"] = result["name"]
+
+            if result.get("price"):
+                product["last_price"] = result["price"]
+
+            if result.get("quantity") is not None:
+                product["last_quantity"] = result["quantity"]
 
             # ── CRITICAL: Don't overwrite a known status with "unknown" ──
             # "unknown" means the scraper couldn't determine status (page load

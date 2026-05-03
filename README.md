@@ -70,6 +70,8 @@ STOCK_BOT_WATCHLIST_FILE=/data/watchlist.json
 
 Runtime settings such as retailer intervals, alert toggles, low-stock threshold, and default products live in [config.py](config.py).
 
+Product packs live under [config/products](config/products). The included `unifi_msp` pack adds core UniFi gear commonly sourced by MSPs and installers.
+
 ## Quick Start: Docker on Linux
 
 Fresh clone:
@@ -241,6 +243,9 @@ The example unit is [stock-bot.service.example](stock-bot.service.example).
 | `!watch <url>` | Add a supported product URL to the watchlist. |
 | `!unwatch <url>` | Remove a product URL from the watchlist. |
 | `!list` | Show monitored products and last known status. |
+| `!packs` | Show available product packs. |
+| `!watch_pack <pack_id>` | Add a product pack to the watchlist. |
+| `!report` | Show current stock summary by status. |
 | `!check` | Force an immediate stock check. |
 | `!test_alert [status]` | Send a simulated alert embed after 15 seconds without changing watchlist state. |
 | `!help_stock` | Show bot command help. |
@@ -250,9 +255,48 @@ Examples:
 ```text
 !watch https://store.ui.com/us/en/products/utr
 !watch https://www.amazon.com/dp/B0XXXXXXXX
+!packs
+!watch_pack unifi_msp
+!report
 !list
 !check
 !test_alert in_stock
+```
+
+## MSP Product Packs
+
+Product packs turn the bot from a URL watcher into a procurement monitor. A pack defines SKUs, categories, priority, and vendor URLs. Adding a pack creates one watchlist entry per vendor URL.
+
+Included pack:
+
+| Pack ID | Description |
+|---|---|
+| `unifi_msp` | Core UniFi gateways, switches, access points, cameras, and NVRs for MSP sourcing. |
+
+Add the pack:
+
+```text
+!watch_pack unifi_msp
+```
+
+Run a live scrape and then show a summary:
+
+```text
+!check
+!report
+```
+
+Each pack product supports this shape:
+
+```yaml
+- sku: UDM-SE
+  name: UniFi Dream Machine Special Edition
+  category: Gateways
+  priority: high
+  vendors:
+    - name: Ubiquiti Store
+      site: ui.com
+      url: https://store.ui.com/us/en/products/udm-se
 ```
 
 ## Triage and Verification
@@ -321,6 +365,7 @@ tracker-network-stock/
 |-- scripts/
 |   |-- docker_setup.sh            # Docker clone-to-run setup helper
 |   `-- triage_stock.py            # Scraper and alert-state triage tool
+|-- config/products/               # Product pack YAML files
 |-- Dockerfile                     # Production container image
 |-- docker-compose.yml             # Docker Compose service definition
 |-- setup_linux_service.sh         # systemd setup helper

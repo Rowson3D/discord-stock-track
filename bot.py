@@ -74,6 +74,40 @@ async def list_products(ctx):
     await ctx.send("\n".join(lines))
 
 
+@bot.command(name="packs")
+async def list_packs(ctx):
+    """List available product packs."""
+    packs = bot.monitor.list_product_packs()
+    if not packs:
+        await ctx.send("📭 No product packs found.")
+        return
+
+    embed = discord.Embed(title="Product Packs", color=0x5865F2)
+    for pack in packs:
+        embed.add_field(
+            name=f"{pack['id']} — {pack['name']}",
+            value=(
+                f"{pack.get('description') or 'No description'}\n"
+                f"Products: `{pack['product_count']}` · Watch entries: `{pack['watch_entry_count']}`"
+            ),
+            inline=False,
+        )
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="watch_pack")
+async def watch_pack(ctx, pack_id: str):
+    """Add a product pack to the watchlist. Usage: !watch_pack <pack_id>"""
+    result = bot.monitor.add_product_pack(pack_id)
+    await ctx.send(result)
+
+
+@bot.command(name="report")
+async def report(ctx):
+    """Show current stock watch summary."""
+    await ctx.send(embed=bot.monitor.build_report_embed())
+
+
 @bot.command(name="check")
 async def force_check(ctx):
     """Force an immediate check of all products."""
@@ -106,6 +140,9 @@ async def help_stock(ctx):
     embed.add_field(name="!watch <url>", value="Add a product URL to monitor", inline=False)
     embed.add_field(name="!unwatch <url>", value="Remove a product URL", inline=False)
     embed.add_field(name="!list", value="Show all monitored products", inline=False)
+    embed.add_field(name="!packs", value="Show available product packs", inline=False)
+    embed.add_field(name="!watch_pack <pack_id>", value="Add a product pack to monitor", inline=False)
+    embed.add_field(name="!report", value="Show current stock summary", inline=False)
     embed.add_field(name="!check", value="Force an immediate check now", inline=False)
     embed.add_field(name="!test_alert [status]", value="Send a simulated alert embed after 15 seconds", inline=False)
     embed.add_field(
