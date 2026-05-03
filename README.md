@@ -1,189 +1,159 @@
-# 📦 Stock Alert Discord Bot
+# Tracker Network Stock Bot
 
-Monitors Ubiquiti, Amazon, B&H Photo, and Newegg for stock changes and sends
-alerts to a private Discord channel.
+Discord stock-alert bot for monitoring retailer product pages and posting stock changes to a configured Discord channel.
 
----
+The bot currently supports Ubiquiti, Amazon, B&H Photo, and Newegg. Ubiquiti pages use Playwright Chromium because the store is JavaScript-rendered; other retailers use HTML scraping.
 
-## 🚀 Setup
+## Features
 
-### 1. Install Python dependencies
-```bash
-pip install -r requirements.txt
-playwright install chromium
-```
+- Polls configured products on per-retailer intervals.
+- Sends Discord embeds when products become available or low stock.
+- Preserves last known status when a scraper returns `unknown`, preventing missed back-in-stock transitions caused by transient page or browser failures.
+- Persists watchlist data across restarts.
+- Includes Docker Compose, systemd, and local development workflows.
+- Includes a triage script for scraper/browser/alert-state verification.
 
-On Linux, prefer:
-```bash
-playwright install --with-deps chromium
-```
+## Supported Retailers
 
-> Playwright + Chromium is required for Ubiquiti (ui.com), which is a
-> JavaScript-rendered SPA. All other sites use lightweight HTML scraping.
+| Retailer | Site Key | Default Interval | Notes |
+|---|---:|---:|---|
+| Ubiquiti Store | `ui.com` | 60s | Uses Playwright Chromium with HTTP fallback. |
+| Amazon | `amazon.com` | 300s | Higher interval recommended because Amazon blocks aggressive scraping. |
+| B&H Photo | `bhphotovideo.com` | 60s | HTML scraper. |
+| Newegg | `newegg.com` | 60s | HTML scraper. |
 
----
+## Requirements
 
-### 2. Create your Discord Bot
+For Docker deployment:
 
-1. Go to https://discord.com/developers/applications
-2. Click **New Application** → give it a name
-3. Go to **Bot** tab → click **Add Bot**
-4. Under **Token**, click **Reset Token** and copy it
-5. Under **Privileged Gateway Intents**, enable **Message Content Intent**
-6. Go to **OAuth2 → URL Generator**:
-   - Scopes: `bot`
-   - Bot Permissions: `Send Messages`, `Read Messages/View Channels`, `Embed Links`
-7. Copy the generated URL and open it in your browser to invite the bot to your server
+- Linux host
+- Docker Engine
+- Docker Compose plugin (`docker compose version`)
 
----
+For local Python or systemd deployment:
 
-### 3. Get your Discord Channel ID
+- Python 3.12 recommended
+- `pip`
+- Playwright Chromium (`playwright install chromium`; use `--with-deps` on Linux)
 
-1. In Discord, go to **User Settings → Advanced** and enable **Developer Mode**
-2. Right-click the channel you want alerts in → **Copy Channel ID**
+## Discord Setup
 
----
+1. Open https://discord.com/developers/applications.
+2. Create an application and add a bot.
+3. Copy the bot token.
+4. Enable **Message Content Intent** under the bot settings.
+5. Invite the bot with these permissions: `View Channels`, `Send Messages`, `Embed Links`.
+6. Enable Discord Developer Mode and copy the target channel ID.
 
-### 4. Configure the bot
+## Configuration
 
-For local testing, copy the example env file to `.env` in the repo root and fill in your real values:
-```bash
-cp tracker-network-stock.env.example .env
-```
+Create a `.env` file from the example:
 
-On Windows PowerShell:
-```powershell
-Copy-Item tracker-network-stock.env.example .env
-```
-
-The app now loads `.env` automatically. You can still use exported environment variables instead:
-```bash
-export DISCORD_BOT_TOKEN="your-token"
-export DISCORD_CHANNEL_ID="123456789012345678"
-```
-
-Optional deployment variables:
-```bash
-export STOCK_BOT_DATA_DIR="/var/lib/tracker-network-stock"
-export STOCK_BOT_WATCHLIST_FILE="/var/lib/tracker-network-stock/watchlist.json"
-```
-
-`config.py` still contains your default intervals, alert toggles, and seeded products.
-
----
-
-### 5. Run the bot
-```bash
-python bot.py
-```
-
-The bot now refuses to start if the Discord token is still the placeholder value.
-
----
-
-## Linux Service
-
-Use the included [stock-bot.service.example](stock-bot.service.example) as a starting point.
-
-Fastest path on Linux:
-```bash
-chmod +x ./setup_linux_service.sh
-./setup_linux_service.sh
-```
-
-If your token and channel are already in the shell environment, the script will write `/etc/tracker-network-stock/bot.env` for you. If they are not set yet, the script now prompts for them and validates that they are not placeholders before starting the service:
-```bash
-export DISCORD_BOT_TOKEN="your-token"
-export DISCORD_CHANNEL_ID="123456789012345678"
-./setup_linux_service.sh
-```
-
-You can override defaults when needed:
-```bash
-RUN_USER=jarrod RUN_GROUP=jarrod REPO_DIR="$PWD" ./setup_linux_service.sh
-```
-
-Typical setup on a Linux machine:
-```bash
-git clone <your-repo-url>
-cd tracker-network-stock
-chmod +x ./setup_linux_service.sh
-./setup_linux_service.sh
-```
-
-The script still cannot automate Discord itself. Before you run it, make sure you have:
-- created the bot application
-- enabled `Message Content Intent`
-- invited it with `View Channels`, `Send Messages`, and `Embed Links`
-- copied the bot token and target channel ID
-
-After editing `/etc/tracker-network-stock/bot.env`, restart with:
-```bash
-sudo systemctl restart tracker-network-stock.service
-sudo systemctl status tracker-network-stock.service
-```
-
-Troubleshooting:
-```bash
-sudo systemctl status tracker-network-stock.service
-journalctl -u tracker-network-stock.service -n 100 --no-pager
-sudo sed -n '1,40p' /etc/systemd/system/tracker-network-stock.service
-sudo sed -n '1,10p' /etc/tracker-network-stock/bot.env
-./.venv/bin/python bot.py
-```
-
-Stock triage for the default travel router:
-```bash
-python scripts/triage_stock.py
-python scripts/triage_stock.py --old-status out_of_stock --simulate-new-status in_stock
-```
-
-The triage output shows whether Playwright Chromium is installed, the current scraper result, and whether the monitor would send a Discord alert for the tested transition.
-
-Common failure patterns:
-- `bad-setting`: the unit file is malformed or still contains env-file contents instead of `[Unit]` / `[Service]` sections.
-- Immediate exit on startup: `DISCORD_BOT_TOKEN` or `DISCORD_CHANNEL_ID` is missing or still a placeholder.
-- `ExecStart` errors: the repo path or `.venv` path in the systemd unit does not match the actual Linux location.
-- Playwright launch failures: rerun `./.venv/bin/playwright install --with-deps chromium`.
-
-The service is configured to restart automatically after failures and on machine reboot.
-
----
-
-## Docker on Linux
-
-Fresh clone quick start:
-```bash
-git clone <your-repo-url>
-cd tracker-network-stock
-./scripts/docker_setup.sh
-```
-
-If running non-interactively:
-```bash
-export DISCORD_BOT_TOKEN="your-token"
-export DISCORD_CHANNEL_ID="123456789012345678"
-./scripts/docker_setup.sh
-```
-
-Build image:
-```bash
-docker build -t tracker-network-stock:latest .
-```
-
-Create env file:
 ```bash
 cp tracker-network-stock.env.example .env
 nano .env
 ```
 
-Run with Docker Compose:
+Required variables:
+
+```dotenv
+DISCORD_BOT_TOKEN=your-token
+DISCORD_CHANNEL_ID=123456789012345678
+```
+
+Optional variables:
+
+```dotenv
+STOCK_BOT_DATA_DIR=/data
+STOCK_BOT_WATCHLIST_FILE=/data/watchlist.json
+```
+
+Runtime settings such as retailer intervals, alert toggles, low-stock threshold, and default products live in [config.py](config.py).
+
+## Quick Start: Docker on Linux
+
+Fresh clone:
+
 ```bash
+git clone <your-repo-url>
+cd tracker-network-stock
+./scripts/docker_setup.sh
+```
+
+The setup script checks Docker, prompts for Discord settings if `.env` is missing, builds the image, starts the bot, and runs triage.
+
+Non-interactive setup:
+
+```bash
+export DISCORD_BOT_TOKEN="your-token"
+export DISCORD_CHANNEL_ID="123456789012345678"
+./scripts/docker_setup.sh
+```
+
+Manual Compose setup:
+
+```bash
+cp tracker-network-stock.env.example .env
+nano .env
 docker compose up -d --build
 docker compose logs -f stock-bot
 ```
 
+The Docker image installs Playwright Chromium at build time. Runtime data is stored in the `stock-bot-data` Docker volume mounted at `/data`.
+
+## Updating a Docker Deployment
+
+On the deployed Linux host:
+
+```bash
+cd tracker-network-stock
+git pull
+docker compose up -d --build
+docker compose logs -f stock-bot
+```
+
+Run triage after update:
+
+```bash
+docker compose run --rm stock-bot python scripts/triage_stock.py
+```
+
+One-command update using the setup script:
+
+```bash
+cd tracker-network-stock
+git pull
+./scripts/docker_setup.sh
+```
+
+## Docker Commands
+
+Build image only:
+
+```bash
+docker build -t tracker-network-stock:latest .
+```
+
+Start service:
+
+```bash
+docker compose up -d --build
+```
+
+View logs:
+
+```bash
+docker compose logs -f stock-bot
+```
+
+Stop service:
+
+```bash
+docker compose down
+```
+
 Run without Compose:
+
 ```bash
 docker volume create tracker-network-stock-data
 docker run -d \
@@ -195,121 +165,201 @@ docker run -d \
   tracker-network-stock:latest
 ```
 
-Triage inside container:
+## Local Development
+
+Create environment and install dependencies:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+playwright install chromium
+```
+
+On Linux, install browser dependencies too:
+
+```bash
+playwright install --with-deps chromium
+```
+
+Run locally:
+
+```bash
+cp tracker-network-stock.env.example .env
+nano .env
+python bot.py
+```
+
+Windows PowerShell activation:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+.\.venv\Scripts\Activate.ps1
+Copy-Item tracker-network-stock.env.example .env
+python bot.py
+```
+
+## Linux systemd Deployment
+
+Docker is the recommended deployment path. Use systemd when you need a host-managed Python service instead.
+
+Fast setup:
+
+```bash
+git clone <your-repo-url>
+cd tracker-network-stock
+./setup_linux_service.sh
+```
+
+Non-interactive setup:
+
+```bash
+export DISCORD_BOT_TOKEN="your-token"
+export DISCORD_CHANNEL_ID="123456789012345678"
+./setup_linux_service.sh
+```
+
+Restart after config changes:
+
+```bash
+sudo systemctl restart tracker-network-stock.service
+sudo systemctl status tracker-network-stock.service
+```
+
+Logs:
+
+```bash
+journalctl -u tracker-network-stock.service -n 100 --no-pager
+```
+
+The example unit is [stock-bot.service.example](stock-bot.service.example).
+
+## Discord Commands
+
+| Command | Description |
+|---|---|
+| `!watch <url>` | Add a supported product URL to the watchlist. |
+| `!unwatch <url>` | Remove a product URL from the watchlist. |
+| `!list` | Show monitored products and last known status. |
+| `!check` | Force an immediate stock check. |
+| `!help_stock` | Show bot command help. |
+
+Examples:
+
+```text
+!watch https://store.ui.com/us/en/products/utr
+!watch https://www.amazon.com/dp/B0XXXXXXXX
+!list
+!check
+```
+
+## Triage and Verification
+
+Run on host Python environment:
+
+```bash
+python scripts/triage_stock.py
+python scripts/triage_stock.py --old-status out_of_stock --simulate-new-status in_stock
+```
+
+Run inside Docker:
+
 ```bash
 docker compose run --rm stock-bot python scripts/triage_stock.py
 docker compose run --rm stock-bot python scripts/triage_stock.py --old-status out_of_stock --simulate-new-status in_stock
 ```
 
-Stop/remove:
-```bash
-docker compose down
+The triage report includes:
+
+- detected site key
+- Playwright install and launch status for Ubiquiti
+- current scrape result
+- simulated alert decision for status transitions
+
+Expected alert simulation for an available product:
+
+```json
+{
+  "old_status": "out_of_stock",
+  "new_status": "in_stock",
+  "would_send_discord_alert": true
+}
 ```
 
-The image installs Playwright Chromium during build, so Ubiquiti scraping works without a separate browser install on the host. Runtime watchlist data lives in the Docker volume mounted at `/data`.
+## Data and Persistence
 
----
+Default data locations:
 
-## Git Workflow
-
-This repo is safe to push as long as you keep secrets in `/etc/tracker-network-stock/bot.env` or shell environment variables and do not commit local runtime data.
-
-Files intentionally not tracked:
-- `.venv/`
-- `data/`
-- `watchlist.json`
-- local `.env` files
-
-Typical first commit:
-```bash
-git init
-git add .
-git commit -m "Initial stock bot setup"
-```
-
-If you are pushing to GitHub:
-```bash
-git remote add origin <your-repo-url>
-git branch -M main
-git push -u origin main
-```
-
----
-
-## VS Code Remote SSH
-
-Recommended extensions for this repo are listed in `.vscode/extensions.json`.
-
-Typical workflow:
-1. Push this repo to your git remote from your local machine.
-2. SSH into the Linux machine once and clone the repo there.
-3. In VS Code, use `Remote-SSH: Connect to Host...`.
-4. Open the cloned folder on the Linux machine.
-5. Use the integrated terminal in that remote window for setup and service management.
-
-Typical Linux-side clone and setup:
-```bash
-git clone <your-repo-url>
-cd tracker-network-stock
-chmod +x ./setup_linux_service.sh
-./setup_linux_service.sh
-```
-
-Once connected over Remote SSH, all terminals, Python execution, and file edits happen directly on the Linux host.
-
----
-
-## 💬 Discord Commands
-
-| Command | Description |
+| Deployment | Watchlist Location |
 |---|---|
-| `!watch <url>` | Add a product URL to monitor |
-| `!unwatch <url>` | Remove a product from monitoring |
-| `!list` | Show all monitored products and their current status |
-| `!check` | Force an immediate check right now |
-| `!help_stock` | Show command help |
+| Docker | `/data/watchlist.json` in `stock-bot-data` volume |
+| Local development | `data/watchlist.json` |
+| systemd | `/var/lib/tracker-network-stock/watchlist.json` unless overridden |
 
-### Example
+The watchlist file is written atomically through a temporary file and then replaced.
+
+## Project Structure
+
+```text
+tracker-network-stock/
+|-- bot.py                         # Discord bot entry point and commands
+|-- config.py                      # Environment loading and runtime configuration
+|-- monitor.py                     # Polling loop, state machine, and Discord alerts
+|-- scrapers.py                    # Retailer-specific stock scrapers
+|-- scripts/
+|   |-- docker_setup.sh            # Docker clone-to-run setup helper
+|   `-- triage_stock.py            # Scraper and alert-state triage tool
+|-- Dockerfile                     # Production container image
+|-- docker-compose.yml             # Docker Compose service definition
+|-- setup_linux_service.sh         # systemd setup helper
+|-- stock-bot.service.example      # Example systemd unit
+|-- tracker-network-stock.env.example
+`-- requirements.txt
 ```
-!watch https://www.amazon.com/dp/B0XXXXXXXX
-!watch https://www.newegg.com/p/XXXXXXXX
-!list
-!check
+
+## Security Notes
+
+- Never commit `.env` or real Discord bot tokens.
+- Rotate any token that was pasted into chat, committed, or shared outside the deployment host.
+- Keep production secrets in `.env`, shell environment variables, or `/etc/tracker-network-stock/bot.env` for systemd.
+- The Docker container runs as non-root user `stockbot`.
+- `.gitignore` and `.dockerignore` exclude local env files, virtual environments, logs, and runtime data.
+
+## Troubleshooting
+
+Docker service status:
+
+```bash
+docker compose ps
+docker compose logs -f stock-bot
 ```
 
----
+Container triage:
 
-## ⚙️ Check Intervals (config.py)
+```bash
+docker compose run --rm stock-bot python scripts/triage_stock.py
+```
 
-| Site | Default Interval | Notes |
+systemd status:
+
+```bash
+sudo systemctl status tracker-network-stock.service
+journalctl -u tracker-network-stock.service -n 100 --no-pager
+```
+
+Common failures:
+
+| Symptom | Likely Cause | Fix |
 |---|---|---|
-| ui.com | 60s | Uses headless browser |
-| amazon.com | 300s | **Recommended 5 min+** — Amazon blocks aggressive scrapers |
-| bhphotovideo.com | 60s | Safe to poll frequently |
-| newegg.com | 60s | Safe to poll frequently |
+| Bot exits immediately | Missing or placeholder Discord token/channel | Check `.env` or systemd env file. |
+| No Ubiquiti status | Playwright Chromium missing or cannot launch | Docker: rebuild image. Local/systemd: run `playwright install --with-deps chromium`. |
+| No Discord alerts | Bot lacks channel permission or wrong channel ID | Reinvite bot or update `DISCORD_CHANNEL_ID`. |
+| Repeated `unknown` status | Retailer page changed, network block, or anti-bot response | Run triage and review scraper output/logs. |
+| `bad-setting` in systemd | Malformed unit file | Compare against [stock-bot.service.example](stock-bot.service.example). |
 
----
+## Maintenance
 
-## 📁 Files
-
-```
-stock-bot/
-├── bot.py            # Discord bot + commands
-├── monitor.py        # Polling loop + alert logic
-├── scrapers.py       # Per-site scraping logic
-├── config.py         # ← Edit this with your token + channel ID
-├── watchlist.json    # Auto-created; persists your product list
-└── requirements.txt
-```
-
----
-
-## ⚠️ Notes
-
-- **Amazon**: The bot uses realistic browser headers but Amazon's anti-bot
-  detection is aggressive. If you get blocked, increase the interval in
-  `config.py` or consider using a proxy.
-- **Ubiquiti**: Uses Playwright (headless Chromium) since ui.com is a
-  React app. First run may be slower while Chromium launches.
-- The watchlist is now stored under `data/watchlist.json` by default, or the path set by `STOCK_BOT_DATA_DIR` / `STOCK_BOT_WATCHLIST_FILE`.
-- The monitor loop starts once during bot setup, avoiding duplicate polling tasks after Discord reconnects.
+- Prefer Docker for production deployments to avoid host Python and browser drift.
+- After code updates, run `docker compose up -d --build` and then triage.
+- Increase retailer intervals if rate limits or anti-bot pages appear.
+- Keep dependencies current in [requirements.txt](requirements.txt) and rebuild Docker after changes.
