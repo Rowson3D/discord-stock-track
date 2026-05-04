@@ -68,6 +68,7 @@ CONFIG = {
         # Seconds between checks per site. Amazon is higher to avoid bans.
         "ui.com":             60,
         "amazon.com":        300,   # 5 min recommended — Amazon blocks aggressive scrapers
+        "bestbuy.com":       120,
         "bhphotovideo.com":   60,
         "newegg.com":         60,
     },

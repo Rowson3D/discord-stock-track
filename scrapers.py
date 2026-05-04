@@ -204,6 +204,44 @@ def scrape_amazon(url: str) -> dict:
 
 
 # ─────────────────────────────────────────────
+# Best Buy (bestbuy.com)
+# ─────────────────────────────────────────────
+def scrape_bestbuy(url: str) -> dict:
+    result = {"status": "unknown", "quantity": None, "price": None, "name": None}
+    resp = _get(url, timeout=30)
+    if not resp:
+        return result
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    title_el = soup.select_one("h1.heading-5, h1")
+    if title_el:
+        result["name"] = title_el.get_text(" ", strip=True)
+    else:
+        meta_title = soup.select_one("meta[property='og:title'], meta[name='twitter:title']")
+        if meta_title and meta_title.get("content"):
+            result["name"] = meta_title["content"].strip()
+
+    price_el = soup.select_one(".priceView-customer-price span, [data-testid='customer-price'] span")
+    if price_el:
+        result["price"] = price_el.get_text(strip=True)
+    else:
+        price_match = re.search(r"\$\s?\d[\d,]*(?:\.\d{2})?", soup.get_text(" "))
+        if price_match:
+            result["price"] = price_match.group(0).replace(" ", "")
+
+    page_text = re.sub(r"\s+", " ", soup.get_text(" ").lower())
+    if any(phrase in page_text for phrase in ("add to cart", "add for shipping", "available for pickup")):
+        result["status"] = "in_stock"
+    elif any(phrase in page_text for phrase in ("sold out", "out of stock", "unavailable nearby", "not available")):
+        result["status"] = "out_of_stock"
+    elif any(phrase in page_text for phrase in ("limited quantity", "only a few left", "low stock")):
+        result["status"] = "low_stock"
+
+    return result
+
+
+# ─────────────────────────────────────────────
 # B&H Photo (bhphotovideo.com)
 # ─────────────────────────────────────────────
 def scrape_bh(url: str) -> dict:
@@ -288,6 +326,7 @@ def scrape(url: str, site: str) -> dict:
     scrapers = {
         "ui.com":             scrape_ubiquiti,
         "amazon.com":         scrape_amazon,
+        "bestbuy.com":        scrape_bestbuy,
         "bhphotovideo.com":   scrape_bh,
         "newegg.com":         scrape_newegg,
     }

@@ -42,6 +42,7 @@ STATUS_LABEL = {
 SITE_NAMES = {
     "ui.com":            "Ubiquiti Store",
     "amazon.com":        "Amazon",
+    "bestbuy.com":       "Best Buy",
     "bhphotovideo.com":  "B&H Photo",
     "newegg.com":        "Newegg",
 }
@@ -53,7 +54,7 @@ def detect_site(url: str) -> str | None:
     if host.startswith("www."):
         host = host[4:]
 
-    for key in ["ui.com", "amazon.com", "bhphotovideo.com", "newegg.com"]:
+    for key in ["ui.com", "amazon.com", "bestbuy.com", "bhphotovideo.com", "newegg.com"]:
         if key in host:
             return key
     return None
@@ -120,7 +121,7 @@ class StockMonitor:
         if not site:
             return (
                 f"❌ Unsupported site. Supported: "
-                f"ui.com, amazon.com, bhphotovideo.com, newegg.com"
+                f"ui.com, amazon.com, bestbuy.com, bhphotovideo.com, newegg.com"
             )
 
         existing = [p for p in self.watchlist if p["url"] == url]

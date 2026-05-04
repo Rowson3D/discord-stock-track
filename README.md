@@ -2,7 +2,7 @@
 
 Discord stock-alert bot for monitoring retailer product pages and posting stock changes to a configured Discord channel.
 
-The bot currently supports Ubiquiti, Amazon, B&H Photo, and Newegg. Ubiquiti pages use Playwright Chromium because the store is JavaScript-rendered; other retailers use HTML scraping.
+The bot currently supports Ubiquiti, Amazon, Best Buy, B&H Photo, and Newegg. Ubiquiti pages use Playwright Chromium because the store is JavaScript-rendered; other retailers use HTML scraping.
 
 ## Features
 
@@ -20,6 +20,7 @@ The bot currently supports Ubiquiti, Amazon, B&H Photo, and Newegg. Ubiquiti pag
 |---|---:|---:|---|
 | Ubiquiti Store | `ui.com` | 60s | Uses Playwright Chromium with HTTP fallback. |
 | Amazon | `amazon.com` | 300s | Higher interval recommended because Amazon blocks aggressive scraping. |
+| Best Buy | `bestbuy.com` | 120s | Useful for GPU stock checks; HTML scraper. |
 | B&H Photo | `bhphotovideo.com` | 60s | HTML scraper. |
 | Newegg | `newegg.com` | 60s | HTML scraper. |
 
@@ -86,7 +87,7 @@ MESSAGE_CLEANUP_DELETE_USER_COMMANDS=false
 
 Runtime settings such as retailer intervals, alert toggles, low-stock threshold, and default products live in [config.py](config.py).
 
-Product packs live under [config/products](config/products). The included `unifi_msp` pack adds core UniFi gear commonly sourced by MSPs and installers.
+Product packs live under [config/products](config/products). The included `unifi_msp` pack adds core UniFi gear commonly sourced by MSPs and installers; `gpu_scalp` seeds high-demand GPU watches such as the RTX 4090 Founders Edition.
 
 ## Message Cleanup
 
@@ -336,6 +337,7 @@ Examples:
 !watch https://www.amazon.com/dp/B0XXXXXXXX
 !packs
 !watch_pack unifi_msp
+!watch_pack gpu_scalp
 !report
 !list
 !unwatch 3
@@ -353,11 +355,13 @@ Included pack:
 | Pack ID | Description |
 |---|---|
 | `unifi_msp` | Core UniFi gateways, switches, access points, cameras, and NVRs for MSP sourcing. |
+| `gpu_scalp` | High-demand GPU watches for retail-priced drops, starting with the RTX 4090 Founders Edition. |
 
 Add the pack:
 
 ```text
 !watch_pack unifi_msp
+!watch_pack gpu_scalp
 ```
 
 Remove entries later:

@@ -1,0 +1,12 @@
+id: gpu_scalp
+name: GPU Scalper Watch
+description: High-demand GPUs that are often hard to find at retail pricing.
+products:
+  - sku: RTX-4090-FE
+    name: NVIDIA GeForce RTX 4090 Founders Edition
+    category: GPUs
+    priority: high
+    vendors:
+      - name: Best Buy
+        site: bestbuy.com
+        url: https://www.bestbuy.com/site/nvidia-geforce-rtx-4090-24gb-gddr6x-graphics-card-titanium-and-black/6521430.p?skuId=6521430

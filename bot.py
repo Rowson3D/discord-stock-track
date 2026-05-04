@@ -317,7 +317,7 @@ async def help_stock(ctx):
     embed.add_field(name="!test_alert [status]", value="Send a simulated alert embed after 15 seconds", inline=False)
     embed.add_field(
         name="Supported Sites",
-        value="• ui.com (Ubiquiti)\n• amazon.com\n• bhphotovideo.com\n• newegg.com",
+        value="• ui.com (Ubiquiti)\n• amazon.com\n• bestbuy.com\n• bhphotovideo.com\n• newegg.com",
         inline=False
     )
     await ctx.send(embed=embed)
