@@ -1,11 +1,13 @@
 id: gpu_scalp
-name: GPU Scalper Watch
-description: High-demand GPUs that are often hard to find at retail pricing.
+name: RTX 4090 MSRP Watch
+description: RTX 4090 retail-price watchlist. Avoids marketplace/scalper listings.
 products:
   - sku: RTX-4090-FE
     name: NVIDIA GeForce RTX 4090 Founders Edition
     category: GPUs
     priority: high
+    msrp_usd: 1599.99
+    notes: Best Buy Founders Edition listing is the cleanest MSRP-style target found; Newegg 4090 listings were far above MSRP.
     vendors:
       - name: Best Buy
         site: bestbuy.com
