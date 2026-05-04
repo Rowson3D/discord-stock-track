@@ -288,8 +288,15 @@ async def test_alert(ctx, status: str = "in_stock"):
         return
 
     embed = bot.monitor.build_test_embed(status)
+    message = bot.monitor._build_alert_message(
+        bot.monitor.watchlist[0] if bot.monitor.watchlist else CONFIG["default_products"][0],
+        {
+            "name": embed.description.replace("**", "") if embed.description else "Test Product",
+        },
+        status,
+    )
     await asyncio.sleep(15)
-    await ctx.send(embed=embed)
+    await ctx.send(content=message, embed=embed)
 
 
 @bot.command(name="help_stock")

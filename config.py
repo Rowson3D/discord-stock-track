@@ -62,6 +62,18 @@ CONFIG = {
 
         # Right-click a channel in Discord (with Developer Mode on) -> Copy ID
         "channel_id": _get_int_env("DISCORD_CHANNEL_ID", 123456789012345678),
+        "mobile_push": _get_bool_env("DISCORD_MOBILE_PUSH_ENABLED", True),
+        "alert_mention": os.getenv("DISCORD_ALERT_MENTION", "").strip(),
+    },
+
+    "sms": {
+        "enabled": _get_bool_env("SMS_ENABLED", False),
+        "provider": os.getenv("SMS_PROVIDER", "twilio").strip().lower(),
+        "account_sid": os.getenv("TWILIO_ACCOUNT_SID", "").strip(),
+        "auth_token": os.getenv("TWILIO_AUTH_TOKEN", "").strip(),
+        "from_number": os.getenv("TWILIO_FROM_NUMBER", "").strip(),
+        "to_numbers": _get_list_env("SMS_TO_NUMBERS"),
+        "timeout_seconds": _get_int_env("SMS_TIMEOUT_SECONDS", 10),
     },
 
     "check_intervals": {
@@ -71,6 +83,17 @@ CONFIG = {
         "bestbuy.com":       120,
         "bhphotovideo.com":   60,
         "newegg.com":         60,
+    },
+
+    "priority_interval_multipliers": {
+        "high": 0.5,
+        "normal": 1.0,
+        "low": 1.5,
+    },
+
+    "poll_loop": {
+        "min_sleep_seconds": _get_float_env("POLL_LOOP_MIN_SLEEP_SECONDS", 1.0) or 1.0,
+        "max_sleep_seconds": _get_float_env("POLL_LOOP_MAX_SLEEP_SECONDS", 10.0) or 10.0,
     },
 
     "alerts": {

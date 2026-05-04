@@ -1,6 +1,6 @@
 # Tracker Network Stock Bot
 
-Discord stock-alert bot for monitoring retailer product pages and posting stock changes to a configured Discord channel.
+Discord stock-alert bot for monitoring retailer product pages and posting stock changes to a configured Discord channel, with optional SMS alerts.
 
 The bot currently supports Ubiquiti, Amazon, Best Buy, B&H Photo, and Newegg. Ubiquiti pages use Playwright Chromium because the store is JavaScript-rendered; other retailers use HTML scraping.
 
@@ -8,6 +8,7 @@ The bot currently supports Ubiquiti, Amazon, Best Buy, B&H Photo, and Newegg. Ub
 
 - Polls configured products on per-retailer intervals.
 - Sends Discord embeds when products become available or low stock.
+- Can also send SMS alerts through Twilio when enabled.
 - Preserves last known status when a scraper returns `unknown`, preventing missed back-in-stock transitions caused by transient page or browser failures.
 - Persists watchlist data across restarts.
 - Can run guarded `ui.com` add-to-cart / checkout-review flows with quantity, price, and cooldown limits.
@@ -63,11 +64,24 @@ DISCORD_BOT_TOKEN=your-token
 DISCORD_CHANNEL_ID=123456789012345678
 ```
 
+Discord mobile push is enabled by default. Stock alerts now send short text line with embed, which gives mobile apps much better chance to fire push notification than embed-only messages. If you want stronger push behavior for mentions-only notification settings, set `DISCORD_ALERT_MENTION` to a user, role, `@here`, or `@everyone` mention string.
+
 Optional variables:
 
 ```dotenv
 STOCK_BOT_DATA_DIR=/data
 STOCK_BOT_WATCHLIST_FILE=/data/watchlist.json
+DISCORD_MOBILE_PUSH_ENABLED=true
+DISCORD_ALERT_MENTION=<@123456789012345678>
+POLL_LOOP_MIN_SLEEP_SECONDS=1
+POLL_LOOP_MAX_SLEEP_SECONDS=10
+SMS_ENABLED=false
+SMS_PROVIDER=twilio
+TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+TWILIO_AUTH_TOKEN=your-auth-token
+TWILIO_FROM_NUMBER=+15551234567
+SMS_TO_NUMBERS=+15557654321,+15559876543
+SMS_TIMEOUT_SECONDS=10
 CHECKOUT_ENABLED=false
 CHECKOUT_MODE=review_only
 CHECKOUT_BROWSER_PROFILE_DIR=/data/playwright-profile
@@ -86,6 +100,10 @@ MESSAGE_CLEANUP_DELETE_USER_COMMANDS=false
 ```
 
 Runtime settings such as retailer intervals, alert toggles, low-stock threshold, and default products live in [config.py](config.py).
+
+SMS uses Twilio's REST API. Set `SMS_ENABLED=true`, fill in the Twilio account values, and provide one or more destination numbers in `SMS_TO_NUMBERS` as a comma-separated list.
+
+Speed notes: high-priority watches now run before normal watches and use half the base site interval by default. Example: `ui.com` high-priority entries check about every 30 seconds, `bestbuy.com` high-priority entries about every 60 seconds. Poll loop also sleeps dynamically now instead of waiting fixed 10 seconds every pass.
 
 Product packs live under [config/products](config/products). The included `unifi_msp` pack adds core UniFi gear commonly sourced by MSPs and installers; `gpu_scalp` seeds high-demand GPU watches such as the RTX 4090 Founders Edition.
 

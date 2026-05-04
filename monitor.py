@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from pathlib import Path
 
 import discord
+import requests
 import yaml
 from config import CONFIG
 from checkout import checkout_enabled_for, checkout_summary, run_checkout, test_checkout
@@ -417,7 +418,7 @@ class StockMonitor:
         try:
             while not self.bot.is_closed():
                 await self.check_all()
-                await asyncio.sleep(10)  # Inner sleep; per-product interval is enforced below
+                await asyncio.sleep(self._get_next_poll_delay())
         except asyncio.CancelledError:
             logger.info("Polling loop cancelled.")
             raise
@@ -434,10 +435,12 @@ class StockMonitor:
                 logger.warning("Discord channel not found. Check DISCORD_CHANNEL_ID or config.py.")
                 return
 
-        for product in self.watchlist:
+        due_products = sorted(self.watchlist, key=self._product_priority_rank)
+
+        for product in due_products:
             url = product["url"]
             site = product["site"]
-            interval = CONFIG["check_intervals"].get(site, 60)
+            interval = self._get_effective_interval(product)
             now = time.time()
 
             # Skip if checked recently (unless forced)
@@ -506,11 +509,17 @@ class StockMonitor:
 
             if should_alert:
                 embed = self._build_embed(product, result, old_status, new_status)
+                message = self._build_alert_message(product, result, new_status)
                 try:
-                    await channel.send(embed=embed)
+                    await channel.send(content=message, embed=embed)
                     logger.info(f"🔔 Alert sent for {product['name']}: {old_status} → {new_status}")
                 except discord.DiscordException as e:
                     logger.error(f"Failed to send alert for {product['name']}: {e}")
+
+                try:
+                    await asyncio.to_thread(self._send_sms_alert, product, result, old_status, new_status)
+                except Exception as e:
+                    logger.error(f"Failed to send SMS alert for {product['name']}: {e}")
 
                 if checkout_enabled_for(product):
                     checkout_result = await loop.run_in_executor(None, run_checkout, product, result, False)
@@ -525,6 +534,37 @@ class StockMonitor:
                 product["last_seen_in_stock"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
             self._save_watchlist()
+
+    def _get_effective_interval(self, product: dict) -> float:
+        site = product["site"]
+        base_interval = CONFIG["check_intervals"].get(site, 60)
+        priority = str(product.get("priority", "normal")).lower()
+        multiplier = CONFIG.get("priority_interval_multipliers", {}).get(priority, 1.0)
+        return max(1.0, float(base_interval) * float(multiplier))
+
+    def _product_priority_rank(self, product: dict) -> tuple[int, float]:
+        priority = str(product.get("priority", "normal")).lower()
+        ranks = {"high": 0, "normal": 1, "low": 2}
+        last_checked = self._last_checked.get(product["url"], 0.0)
+        return (ranks.get(priority, 1), last_checked)
+
+    def _get_next_poll_delay(self) -> float:
+        poll_config = CONFIG.get("poll_loop", {})
+        min_sleep = max(0.25, float(poll_config.get("min_sleep_seconds", 1.0)))
+        max_sleep = max(min_sleep, float(poll_config.get("max_sleep_seconds", 10.0)))
+
+        if not self.watchlist:
+            return max_sleep
+
+        now = time.time()
+        next_due_in = max_sleep
+        for product in self.watchlist:
+            interval = self._get_effective_interval(product)
+            elapsed = now - self._last_checked.get(product["url"], 0.0)
+            due_in = max(0.0, interval - elapsed)
+            next_due_in = min(next_due_in, due_in)
+
+        return min(max_sleep, max(min_sleep, next_due_in))
 
     def _normalize_result(self, result: dict) -> dict:
         normalized = dict(result)
@@ -555,6 +595,78 @@ class StockMonitor:
             return True
 
         return False
+
+    def _send_sms_alert(self, product: dict, result: dict, old_status: str, new_status: str):
+        sms_config = CONFIG.get("sms", {})
+        if not sms_config.get("enabled"):
+            return
+
+        provider = sms_config.get("provider", "twilio")
+        if provider != "twilio":
+            logger.warning(f"SMS disabled: unsupported provider '{provider}'.")
+            return
+
+        account_sid = sms_config.get("account_sid")
+        auth_token = sms_config.get("auth_token")
+        from_number = sms_config.get("from_number")
+        to_numbers = sms_config.get("to_numbers") or []
+        timeout_seconds = sms_config.get("timeout_seconds", 10)
+
+        if not all([account_sid, auth_token, from_number, to_numbers]):
+            logger.warning("SMS enabled but Twilio config is incomplete. Skipping SMS alert.")
+            return
+
+        body = self._build_sms_message(product, result, old_status, new_status)
+        url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
+
+        for to_number in to_numbers:
+            response = requests.post(
+                url,
+                auth=(account_sid, auth_token),
+                data={
+                    "From": from_number,
+                    "To": to_number,
+                    "Body": body,
+                },
+                timeout=timeout_seconds,
+            )
+            response.raise_for_status()
+
+        logger.info(f"SMS alert sent for {product['name']} to {len(to_numbers)} recipient(s).")
+
+    def _build_sms_message(self, product: dict, result: dict, old_status: str, new_status: str) -> str:
+        name = result.get("name") or product["name"]
+        site_name = SITE_NAMES.get(product["site"], product["site"])
+        price = result.get("price")
+        quantity = result.get("quantity")
+        status_label = STATUS_LABEL.get(new_status, new_status)
+        previous_label = STATUS_LABEL.get(old_status, old_status)
+
+        parts = [f"{status_label}: {name}", site_name]
+        if old_status != "unknown":
+            parts.append(f"was {previous_label}")
+        if price:
+            parts.append(f"price {price}")
+        if quantity is not None:
+            parts.append(f"qty {quantity}")
+        parts.append(product["url"])
+        return " | ".join(parts)
+
+    def _build_alert_message(self, product: dict, result: dict, new_status: str) -> str | None:
+        discord_config = CONFIG.get("discord", {})
+        mention = discord_config.get("alert_mention", "")
+        if not discord_config.get("mobile_push", True) and not mention:
+            return None
+
+        name = result.get("name") or product["name"]
+        site_name = SITE_NAMES.get(product["site"], product["site"])
+        status_label = STATUS_LABEL.get(new_status, new_status)
+        parts = []
+        if mention:
+            parts.append(mention)
+        if discord_config.get("mobile_push", True):
+            parts.append(f"{status_label}: {name} at {site_name}")
+        return " | ".join(parts) if parts else None
 
     def _build_embed(self, product: dict, result: dict, old_status: str, new_status: str) -> discord.Embed:
         site = product["site"]
