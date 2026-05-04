@@ -207,6 +207,14 @@ git pull
 
 ## Docker Commands
 
+Rebuild, rerun, and triage with the helper script:
+
+```bash
+./scripts/rebuild_rerun.sh
+./scripts/rebuild_rerun.sh logs
+./scripts/rebuild_rerun.sh gpu-triage
+```
+
 Build image only:
 
 ```bash
