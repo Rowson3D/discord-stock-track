@@ -208,7 +208,7 @@ def scrape_amazon(url: str) -> dict:
 # ─────────────────────────────────────────────
 def scrape_bestbuy(url: str) -> dict:
     result = {"status": "unknown", "quantity": None, "price": None, "name": None}
-    resp = _get(url, timeout=30)
+    resp = _get(url, timeout=12)
     if not resp:
         return result
 

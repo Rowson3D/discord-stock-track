@@ -755,7 +755,16 @@ class StockMonitor:
         base_interval = CONFIG["check_intervals"].get(site, 60)
         priority = str(product.get("priority", "normal")).lower()
         multiplier = CONFIG.get("priority_interval_multipliers", {}).get(priority, 1.0)
-        return max(1.0, float(base_interval) * float(multiplier))
+        interval = max(1.0, float(base_interval) * float(multiplier))
+
+        # Back off URLs that are consistently blocked or unreachable
+        consecutive = self._consecutive_unknowns.get(product["url"], 0)
+        if consecutive >= 50:
+            interval = min(interval * 20, 14400)  # cap at 4 hours
+        elif consecutive >= 10:
+            interval = min(interval * 10, 3600)   # cap at 1 hour
+
+        return interval
 
     def _product_priority_rank(self, product: dict) -> tuple[int, float]:
         priority = str(product.get("priority", "normal")).lower()
