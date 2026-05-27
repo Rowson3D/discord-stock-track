@@ -2,6 +2,7 @@
 Stock Alert Discord Bot - Main Entry Point
 """
 import asyncio
+import logging
 from datetime import timedelta
 
 import discord
@@ -23,6 +24,7 @@ class StockBot(commands.Bot):
 
     async def setup_hook(self):
         self.monitor.load_watchlist()
+        self.monitor.load_subscribers()
         if self.monitor_task is None or self.monitor_task.done():
             self.monitor_task = asyncio.create_task(self.monitor.run_loop(), name="stock-monitor")
         if CONFIG.get("message_cleanup", {}).get("enabled") and (self.cleanup_task is None or self.cleanup_task.done()):
@@ -120,10 +122,26 @@ async def _send_chunks(ctx, message: str, limit: int = 1900):
         await ctx.send(message[start:start + limit])
 
 
+_bot_logger = logging.getLogger(__name__)
+
+
 @bot.event
 async def on_ready():
+    _bot_logger.info(f"Logged in as {bot.user} ({bot.user.id})")
+    _bot_logger.info(f"Monitoring channel: {CONFIG['discord']['channel_id']}")
     print(f"✅ Logged in as {bot.user} ({bot.user.id})")
     print(f"📡 Monitoring channel: {CONFIG['discord']['channel_id']}")
+
+    # Restart the monitor task if it died (e.g. unhandled exception before a reconnect)
+    if bot.monitor_task is None or bot.monitor_task.done():
+        exc = bot.monitor_task.exception() if bot.monitor_task and not bot.monitor_task.cancelled() else None
+        if exc:
+            _bot_logger.error(f"Monitor task had died with exception: {exc!r} — restarting.")
+        else:
+            _bot_logger.warning("Monitor task was not running on on_ready — restarting.")
+        bot.monitor_task = asyncio.create_task(
+            bot.monitor.run_loop(), name="stock-monitor"
+        )
 
 
 @bot.command(name="watch")
@@ -137,6 +155,24 @@ async def watch(ctx, url: str):
 async def whoami(ctx):
     """Show your Discord user ID for checkout approval config."""
     await ctx.send(f"Your Discord user ID: `{ctx.author.id}`")
+
+
+@bot.command(name="subscribe")
+async def subscribe(ctx):
+    """Subscribe yourself to stock alert mentions."""
+    await ctx.send(bot.monitor.subscribe_user(ctx.author.id))
+
+
+@bot.command(name="unsubscribe")
+async def unsubscribe(ctx):
+    """Unsubscribe yourself from stock alert mentions."""
+    await ctx.send(bot.monitor.unsubscribe_user(ctx.author.id))
+
+
+@bot.command(name="subscribers")
+async def subscribers(ctx):
+    """Show current stock alert subscribers."""
+    await ctx.send(bot.monitor.build_subscribers_message())
 
 
 @bot.command(name="unwatch")
@@ -308,6 +344,9 @@ async def help_stock(ctx):
     )
     embed.add_field(name="!watch <url>", value="Add a product URL to monitor", inline=False)
     embed.add_field(name="!whoami", value="Show your Discord user ID for checkout approval config", inline=False)
+    embed.add_field(name="!subscribe", value="Subscribe yourself to stock alert mentions", inline=False)
+    embed.add_field(name="!unsubscribe", value="Remove yourself from stock alert mentions", inline=False)
+    embed.add_field(name="!subscribers", value="Show current stock alert subscribers", inline=False)
     embed.add_field(name="!unwatch <index|url>", value="Remove a watch by list number or exact URL", inline=False)
     embed.add_field(name="!unwatch_pack <pack_id>", value="Remove all entries for a product pack", inline=False)
     embed.add_field(name="!remove_sku <sku>", value="Remove all entries for a SKU", inline=False)

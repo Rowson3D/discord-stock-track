@@ -15,6 +15,9 @@ DATA_DIR = Path(os.getenv("STOCK_BOT_DATA_DIR", BASE_DIR / "data")).expanduser()
 WATCHLIST_FILE = Path(
     os.getenv("STOCK_BOT_WATCHLIST_FILE", DATA_DIR / "watchlist.json")
 ).expanduser()
+SUBSCRIBERS_FILE = Path(
+    os.getenv("STOCK_BOT_SUBSCRIBERS_FILE", DATA_DIR / "subscribers.json")
+).expanduser()
 PRODUCT_PACKS_DIR = Path(
     os.getenv("STOCK_BOT_PRODUCTS_DIR", BASE_DIR / "config" / "products")
 ).expanduser()
@@ -132,6 +135,9 @@ CONFIG = {
 
     # Watchlist file — products are saved/loaded from here
     "watchlist_file": str(WATCHLIST_FILE),
+
+    # Subscriber file — Discord user IDs for global stock alert mentions
+    "subscribers_file": str(SUBSCRIBERS_FILE),
 
     # Product pack directory — YAML packs are loaded by !packs and !watch_pack
     "product_packs_dir": str(PRODUCT_PACKS_DIR),

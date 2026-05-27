@@ -4,8 +4,10 @@ StockMonitor: manages the watchlist, polling loop, and Discord alert dispatch.
 import json
 import asyncio
 import logging
+import os
 import time
 from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
 from urllib.parse import urlparse
 from pathlib import Path
 
@@ -17,7 +19,35 @@ from checkout import checkout_enabled_for, checkout_summary, run_checkout, test_
 from scrapers import scrape
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+# ── Logging setup (runs once at import time) ──────────────────────────────────
+def _configure_logging() -> None:
+    """Configure root logger with console + optional rotating file handler."""
+    _log_level_name = os.getenv("STOCK_BOT_LOG_LEVEL", "INFO").upper()
+    _log_level = getattr(logging, _log_level_name, logging.INFO)
+    _log_fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
+    _handlers: list[logging.Handler] = [logging.StreamHandler()]
+
+    _log_file = os.getenv("STOCK_BOT_LOG_FILE", "").strip()
+    if _log_file:
+        Path(_log_file).parent.mkdir(parents=True, exist_ok=True)
+        _file_handler = RotatingFileHandler(
+            _log_file,
+            maxBytes=5 * 1024 * 1024,  # 5 MB per file
+            backupCount=5,
+            encoding="utf-8",
+        )
+        _handlers.append(_file_handler)
+
+    logging.basicConfig(level=_log_level, format=_log_fmt, handlers=_handlers)
+
+    # Suppress noisy discord.py gateway noise at INFO; keep WARNING+
+    logging.getLogger("discord").setLevel(logging.WARNING)
+    logging.getLogger("discord.http").setLevel(logging.WARNING)
+
+
+_configure_logging()
 
 STATUS_EMOJI = {
     "in_stock":     "🟢",
@@ -71,7 +101,9 @@ class StockMonitor:
         self.bot = bot
         self.watchlist: list[dict] = []
         self.watchlist_file = Path(CONFIG["watchlist_file"]).expanduser().resolve()
+        self.subscribers_file = Path(CONFIG["subscribers_file"]).expanduser().resolve()
         self.product_packs_dir = Path(CONFIG["product_packs_dir"]).expanduser().resolve()
+        self.subscribers: set[str] = set()
         # Track last check time per URL for per-site interval logic
         self._last_checked: dict[str, float] = {}
         # Track consecutive "unknown" results per URL for diagnostics
@@ -103,6 +135,35 @@ class StockMonitor:
                 logger.info(f"Added default product: {product['name']}")
 
         self._save_watchlist()
+
+    def load_subscribers(self):
+        if not self.subscribers_file.exists():
+            self.subscribers = set()
+            return
+
+        try:
+            with self.subscribers_file.open(encoding="utf-8") as f:
+                payload = json.load(f)
+            if isinstance(payload, dict):
+                user_ids = payload.get("user_ids", [])
+            elif isinstance(payload, list):
+                user_ids = payload
+            else:
+                user_ids = []
+            self.subscribers = {str(user_id).strip() for user_id in user_ids if str(user_id).strip()}
+        except Exception as e:
+            logger.error(f"Failed to load subscribers: {e}")
+            self.subscribers = set()
+
+    def _save_subscribers(self):
+        try:
+            self.subscribers_file.parent.mkdir(parents=True, exist_ok=True)
+            temp_file = self.subscribers_file.with_suffix(f"{self.subscribers_file.suffix}.tmp")
+            with temp_file.open("w", encoding="utf-8") as f:
+                json.dump({"user_ids": sorted(self.subscribers)}, f, indent=2)
+            temp_file.replace(self.subscribers_file)
+        except Exception as e:
+            logger.error(f"Failed to save subscribers: {e}")
 
     def _save_watchlist(self):
         try:
@@ -232,6 +293,33 @@ class StockMonitor:
 
     def get_watchlist(self) -> list[dict]:
         return self.watchlist
+
+    def subscribe_user(self, user_id: int | str) -> str:
+        user_id_str = str(user_id).strip()
+        if not user_id_str:
+            return "⚠️ Invalid user ID."
+        if user_id_str in self.subscribers:
+            return "⚠️ You are already subscribed to stock alerts."
+
+        self.subscribers.add(user_id_str)
+        self._save_subscribers()
+        return "✅ You are now subscribed to stock alerts."
+
+    def unsubscribe_user(self, user_id: int | str) -> str:
+        user_id_str = str(user_id).strip()
+        if user_id_str not in self.subscribers:
+            return "⚠️ You are not subscribed to stock alerts."
+
+        self.subscribers.remove(user_id_str)
+        self._save_subscribers()
+        return "✅ You are no longer subscribed to stock alerts."
+
+    def build_subscribers_message(self) -> str:
+        if not self.subscribers:
+            return "📭 No subscribed users."
+
+        mentions = " ".join(f"<@{user_id}>" for user_id in sorted(self.subscribers))
+        return f"🔔 Subscribers ({len(self.subscribers)}): {mentions}"
 
     def configure_checkout(self, index: int, enabled: bool, quantity: int | None = None, max_quantity: int | None = None, max_unit_price: float | None = None, max_order_total: float | None = None) -> str:
         if index < 1 or index > len(self.watchlist):
@@ -415,9 +503,29 @@ class StockMonitor:
         logger.info("Polling loop started.")
         await self.bot.wait_until_ready()
 
+        _check_count = 0
+        _last_heartbeat = time.monotonic()
+        _HEARTBEAT_INTERVAL = 3600  # log alive message every hour
+
         try:
             while not self.bot.is_closed():
-                await self.check_all()
+                try:
+                    await self.check_all()
+                    _check_count += 1
+                except Exception as e:
+                    logger.exception(
+                        f"Unexpected error in polling loop (will retry in 30s): {e}"
+                    )
+                    await asyncio.sleep(30)
+                    continue
+
+                now = time.monotonic()
+                if now - _last_heartbeat >= _HEARTBEAT_INTERVAL:
+                    logger.info(
+                        f"Polling loop alive — {_check_count} check cycles completed."
+                    )
+                    _last_heartbeat = now
+
                 await asyncio.sleep(self._get_next_poll_delay())
         except asyncio.CancelledError:
             logger.info("Polling loop cancelled.")
@@ -654,19 +762,35 @@ class StockMonitor:
 
     def _build_alert_message(self, product: dict, result: dict, new_status: str) -> str | None:
         discord_config = CONFIG.get("discord", {})
-        mention = discord_config.get("alert_mention", "")
-        if not discord_config.get("mobile_push", True) and not mention:
+        mentions = self._get_alert_mentions()
+        if not discord_config.get("mobile_push", True) and not mentions:
             return None
 
         name = result.get("name") or product["name"]
         site_name = SITE_NAMES.get(product["site"], product["site"])
         status_label = STATUS_LABEL.get(new_status, new_status)
         parts = []
-        if mention:
-            parts.append(mention)
+        if mentions:
+            parts.append(" ".join(mentions))
         if discord_config.get("mobile_push", True):
             parts.append(f"{status_label}: {name} at {site_name}")
         return " | ".join(parts) if parts else None
+
+    def _get_alert_mentions(self) -> list[str]:
+        discord_config = CONFIG.get("discord", {})
+        mentions: list[str] = []
+        global_mention = discord_config.get("alert_mention", "")
+        if global_mention:
+            mentions.append(global_mention)
+        mentions.extend(f"<@{user_id}>" for user_id in sorted(self.subscribers))
+
+        unique_mentions: list[str] = []
+        seen: set[str] = set()
+        for mention in mentions:
+            if mention not in seen:
+                unique_mentions.append(mention)
+                seen.add(mention)
+        return unique_mentions
 
     def _build_embed(self, product: dict, result: dict, old_status: str, new_status: str) -> discord.Embed:
         site = product["site"]
