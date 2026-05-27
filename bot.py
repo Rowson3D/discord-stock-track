@@ -3,9 +3,11 @@ Stock Alert Discord Bot - Main Entry Point
 """
 import asyncio
 import logging
+import time
 from datetime import timedelta
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 from config import CONFIG
 from monitor import StockMonitor
@@ -21,10 +23,13 @@ class StockBot(commands.Bot):
         self.monitor = StockMonitor(self)
         self.monitor_task: asyncio.Task | None = None
         self.cleanup_task: asyncio.Task | None = None
+        self._start_time = time.monotonic()
 
     async def setup_hook(self):
         self.monitor.load_watchlist()
         self.monitor.load_subscribers()
+        await self.add_cog(StockCommands(self))
+        await self.tree.sync()
         if self.monitor_task is None or self.monitor_task.done():
             self.monitor_task = asyncio.create_task(self.monitor.run_loop(), name="stock-monitor")
         if CONFIG.get("message_cleanup", {}).get("enabled") and (self.cleanup_task is None or self.cleanup_task.done()):
@@ -105,6 +110,55 @@ class StockBot(commands.Bot):
         return False
 
 
+class StockCommands(commands.Cog):
+    """User-facing slash commands."""
+
+    def __init__(self, bot: "StockBot"):
+        self.bot = bot
+
+    @app_commands.command(name="watch", description="Start watching a product URL for stock alerts")
+    @app_commands.describe(url="Product URL — ui.com, amazon.com, bestbuy.com, bhphotovideo.com, newegg.com")
+    async def slash_watch(self, interaction: discord.Interaction, url: str):
+        result = self.bot.monitor.add_product(url, interaction.user.id)
+        await interaction.response.send_message(result, ephemeral=True)
+
+    @app_commands.command(name="unwatch", description="Stop watching an item by its list number")
+    @app_commands.describe(number="Item number from /list")
+    async def slash_unwatch(self, interaction: discord.Interaction, number: int):
+        result = self.bot.monitor.unwatch_user_product(number, interaction.user.id)
+        await interaction.response.send_message(result, ephemeral=True)
+
+    @app_commands.command(name="list", description="Show the products you are currently watching")
+    async def slash_list(self, interaction: discord.Interaction):
+        embeds = self.bot.monitor.build_user_watchlist_embeds(interaction.user.id)
+        await interaction.response.send_message(embeds=embeds[:1], ephemeral=True)
+        for embed in embeds[1:]:
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="status", description="Show bot health and current stock summary")
+    async def slash_status(self, interaction: discord.Interaction):
+        monitor_running = bool(self.bot.monitor_task and not self.bot.monitor_task.done())
+        uptime_sec = int(time.monotonic() - self.bot._start_time)
+        hours, rem = divmod(uptime_sec, 3600)
+        minutes = rem // 60
+        watching = len(self.bot.monitor.watchlist)
+
+        counts: dict[str, int] = {}
+        for p in self.bot.monitor.watchlist:
+            s = p.get("last_status", "unknown")
+            counts[s] = counts.get(s, 0) + 1
+
+        emoji_map = {"in_stock": "🟢", "low_stock": "🟡", "out_of_stock": "🔴", "unknown": "⚪"}
+        embed = discord.Embed(title="📡 Bot Status", color=0x57F287 if monitor_running else 0xED4245)
+        embed.add_field(name="Monitor", value="🟢 Running" if monitor_running else "🔴 Stopped", inline=True)
+        embed.add_field(name="Uptime", value=f"{hours}h {minutes}m", inline=True)
+        embed.add_field(name="Watching", value=f"{watching} product(s)", inline=True)
+        if counts:
+            lines = [f"{emoji_map.get(s, '⚪')} {s.replace('_', ' ').title()}: {n}" for s, n in sorted(counts.items())]
+            embed.add_field(name="Stock Summary", value="\n".join(lines), inline=False)
+        await interaction.response.send_message(embed=embed)
+
+
 bot = StockBot()
 
 
@@ -147,7 +201,7 @@ async def on_ready():
 @bot.command(name="watch")
 async def watch(ctx, url: str):
     """Add a product URL to the watchlist. Usage: !watch <url>"""
-    result = bot.monitor.add_product(url)
+    result = bot.monitor.add_product(url, ctx.author.id)
     await ctx.send(result)
 
 
@@ -190,7 +244,10 @@ async def subscribers(ctx):
 @bot.command(name="unwatch")
 async def unwatch(ctx, target: str):
     """Remove a watch by list index or exact URL. Usage: !unwatch <index|url>"""
-    result = bot.monitor.remove_product_by_index(int(target)) if target.isdigit() else bot.monitor.remove_product(target)
+    if target.isdigit():
+        result = bot.monitor.unwatch_user_product(int(target), ctx.author.id)
+    else:
+        result = bot.monitor.remove_product(target)
     await ctx.send(result)
 
 
@@ -218,8 +275,8 @@ async def clear_watches(ctx, confirm: str | None = None):
 
 @bot.command(name="list")
 async def list_products(ctx):
-    """List all currently monitored products."""
-    for embed in bot.monitor.build_watchlist_embeds():
+    """List your watched products."""
+    for embed in bot.monitor.build_user_watchlist_embeds(ctx.author.id):
         await ctx.send(embed=embed)
 
 
@@ -350,35 +407,21 @@ async def test_alert(ctx, status: str = "in_stock"):
 @bot.command(name="help_stock")
 async def help_stock(ctx):
     """Show help for the stock bot."""
-    embed = discord.Embed(
-        title="📦 Stock Alert Bot — Commands",
-        color=0x5865F2
+    embed = discord.Embed(title="📦 Stock Alert Bot", color=0x5865F2)
+    embed.add_field(
+        name="Slash Commands",
+        value=(
+            "`/watch <url>` — Start watching a product\n"
+            "`/unwatch <number>` — Stop watching (number from `/list`)\n"
+            "`/list` — Your watched items\n"
+            "`/status` — Bot health and stock summary"
+        ),
+        inline=False,
     )
-    embed.add_field(name="!watch <url>", value="Add a product URL to monitor", inline=False)
-    embed.add_field(name="!whoami", value="Show your Discord user ID for checkout approval config", inline=False)
-    embed.add_field(name="!subscribe", value="Get mentioned on ALL stock alerts (global)", inline=False)
-    embed.add_field(name="!unsubscribe", value="Remove yourself from all global alerts", inline=False)
-    embed.add_field(name="!subscribers", value="Show global stock alert subscribers", inline=False)
-    embed.add_field(name="!notify <index>", value="Get mentioned when a specific watch entry changes stock (use `!list` for index numbers)", inline=False)
-    embed.add_field(name="!unnotify <index>", value="Stop being mentioned for a specific watch entry", inline=False)
-    embed.add_field(name="!unwatch <index|url>", value="Remove a watch by list number or exact URL", inline=False)
-    embed.add_field(name="!unwatch_pack <pack_id>", value="Remove all entries for a product pack", inline=False)
-    embed.add_field(name="!remove_sku <sku>", value="Remove all entries for a SKU", inline=False)
-    embed.add_field(name="!clear_watches confirm", value="Clear the entire watchlist", inline=False)
-    embed.add_field(name="!list", value="Show watchlist in paged embeds", inline=False)
-    embed.add_field(name="!packs", value="Show available product packs", inline=False)
-    embed.add_field(name="!watch_pack <pack_id>", value="Add a product pack to monitor", inline=False)
-    embed.add_field(name="!report", value="Show current stock summary", inline=False)
-    embed.add_field(name="!check", value="Force an immediate check now", inline=False)
-    embed.add_field(name="!cleanup_now", value="Delete old bot messages using cleanup settings", inline=False)
-    embed.add_field(name="!checkout_config <index> <on|off> [qty] [max_qty] [max_unit] [max_order]", value="Configure guarded checkout for a watch", inline=False)
-    embed.add_field(name="!checkout_test <index> [page|cart]", value="Checkout readiness test; cart depth stops before checkout/payment", inline=False)
-    embed.add_field(name="!checkout <index>", value="Run guarded checkout now for a watch", inline=False)
-    embed.add_field(name="!test_alert [status]", value="Send a simulated alert embed after 15 seconds", inline=False)
     embed.add_field(
         name="Supported Sites",
-        value="• ui.com (Ubiquiti)\n• amazon.com\n• bestbuy.com\n• bhphotovideo.com\n• newegg.com",
-        inline=False
+        value="ui.com · amazon.com · bestbuy.com · bhphotovideo.com · newegg.com",
+        inline=False,
     )
     await ctx.send(embed=embed)
 

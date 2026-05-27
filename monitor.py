@@ -94,6 +94,7 @@ def detect_site(url: str) -> str | None:
 # How many times to retry a scrape that returns "unknown" before accepting it
 SCRAPE_RETRIES = 2
 RETRY_DELAY = 3  # seconds between retries
+ALERT_COOLDOWN_SECONDS = 600  # minimum seconds between alerts for the same product
 
 
 class StockMonitor:
@@ -108,6 +109,8 @@ class StockMonitor:
         self._last_checked: dict[str, float] = {}
         # Track consecutive "unknown" results per URL for diagnostics
         self._consecutive_unknowns: dict[str, int] = {}
+        # Track last alert time per URL to prevent spam on retailer glitches
+        self._last_alert_time: dict[str, float] = {}
 
     # ── Watchlist persistence ──────────────────────────────────────
 
@@ -177,7 +180,7 @@ class StockMonitor:
 
     # ── Add / Remove ───────────────────────────────────────────────
 
-    def add_product(self, url: str) -> str:
+    def add_product(self, url: str, user_id: int | str | None = None) -> str:
         url = url.strip()
         site = detect_site(url)
         if not site:
@@ -186,8 +189,17 @@ class StockMonitor:
                 f"ui.com, amazon.com, bestbuy.com, bhphotovideo.com, newegg.com"
             )
 
+        user_id_str = str(user_id) if user_id is not None else None
+
         existing = [p for p in self.watchlist if p["url"] == url]
         if existing:
+            product = existing[0]
+            if user_id_str:
+                watchers: list = product.setdefault("watchers", [])
+                if user_id_str not in watchers:
+                    watchers.append(user_id_str)
+                    self._save_watchlist()
+                    return f"✅ Added **{product.get('name') or SITE_NAMES[site]}** to your watchlist."
             return f"⚠️ Already watching: {url}"
 
         product = {
@@ -196,6 +208,7 @@ class StockMonitor:
             "site": site,
             "last_status": "unknown",
             "last_seen_in_stock": None,
+            "watchers": [user_id_str] if user_id_str else [],
         }
         self.watchlist.append(product)
         self._save_watchlist()
@@ -350,6 +363,59 @@ class StockMonitor:
 
         mentions = " ".join(f"<@{user_id}>" for user_id in sorted(self.subscribers))
         return f"🔔 Subscribers ({len(self.subscribers)}): {mentions}"
+
+    def get_user_watchlist(self, user_id: int | str) -> list[dict]:
+        """Return products where this user is a watcher."""
+        user_id_str = str(user_id)
+        return [p for p in self.watchlist if user_id_str in (p.get("watchers") or [])]
+
+    def unwatch_user_product(self, index: int, user_id: int | str) -> str:
+        """Remove a user from a product's watchers by their personal list index."""
+        user_id_str = str(user_id)
+        user_list = self.get_user_watchlist(user_id)
+        if index < 1 or index > len(user_list):
+            return (
+                f"⚠️ No item #{index} in your list."
+                + (f" You're watching {len(user_list)} item(s) — use `/list` to see them." if user_list else " Use `/watch <url>` to add something.")
+            )
+        product = user_list[index - 1]
+        product["watchers"] = [w for w in (product.get("watchers") or []) if w != user_id_str]
+        name = product.get("sku") or product.get("name") or product["url"]
+        if not product["watchers"]:
+            self.watchlist = [p for p in self.watchlist if p["url"] != product["url"]]
+            self._save_watchlist()
+            return f"🗑️ Removed **{name}** (you were the last watcher)."
+        self._save_watchlist()
+        return f"✅ Unsubscribed from **{name}**."
+
+    def build_user_watchlist_embeds(self, user_id: int | str) -> list[discord.Embed]:
+        """Build embeds showing only this user's watched products, numbered for /unwatch."""
+        user_list = self.get_user_watchlist(user_id)
+        if not user_list:
+            embed = discord.Embed(
+                title="Your Watchlist",
+                description="📭 You're not watching anything yet. Use `/watch <url>` to start.",
+                color=0x99AAB5,
+            )
+            return [embed]
+
+        embeds: list[discord.Embed] = []
+        chunk_size = 10
+        for start in range(0, len(user_list), chunk_size):
+            chunk = user_list[start:start + chunk_size]
+            embed = discord.Embed(title="Your Watchlist", color=0x5865F2)
+            lines = []
+            for i, product in enumerate(chunk, start=start + 1):
+                status = product.get("last_status", "unknown")
+                emoji = STATUS_EMOJI.get(status, "⚪")
+                name = product.get("sku") or product.get("name") or product["url"]
+                site = SITE_NAMES.get(product.get("site", ""), product.get("site", ""))
+                price = f" · {product['last_price']}" if product.get("last_price") else ""
+                lines.append(f"`{i}.` {emoji} **{name}** · {site}{price}")
+            embed.description = "\n".join(lines)
+            embed.set_footer(text="Use /unwatch <number> to stop watching an item")
+            embeds.append(embed)
+        return embeds
 
     def configure_checkout(self, index: int, enabled: bool, quantity: int | None = None, max_quantity: int | None = None, max_unit_price: float | None = None, max_order_total: float | None = None) -> str:
         if index < 1 or index > len(self.watchlist):
@@ -645,11 +711,22 @@ class StockMonitor:
 
             should_alert = self._should_alert(old_status, new_status)
 
+            # Cooldown: suppress alert if the same product was alerted too recently
+            if should_alert:
+                last_alerted = self._last_alert_time.get(url, 0.0)
+                if (time.time() - last_alerted) < ALERT_COOLDOWN_SECONDS:
+                    logger.info(
+                        f"[{site}] {product['name']}: alert suppressed (cooldown, "
+                        f"{int(ALERT_COOLDOWN_SECONDS - (time.time() - last_alerted))}s remaining)."
+                    )
+                    should_alert = False
+
             if should_alert:
                 embed = self._build_embed(product, result, old_status, new_status)
                 message = self._build_alert_message(product, result, new_status)
                 try:
                     await channel.send(content=message, embed=embed)
+                    self._last_alert_time[url] = time.time()
                     logger.info(f"🔔 Alert sent for {product['name']}: {old_status} → {new_status}")
                 except discord.DiscordException as e:
                     logger.error(f"Failed to send alert for {product['name']}: {e}")
