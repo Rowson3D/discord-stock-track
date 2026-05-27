@@ -314,6 +314,36 @@ class StockMonitor:
         self._save_subscribers()
         return "✅ You are no longer subscribed to stock alerts."
 
+    def notify_user(self, index: int, user_id: int | str) -> str:
+        """Subscribe a user to alerts for a specific watchlist entry."""
+        if index < 1 or index > len(self.watchlist):
+            return f"⚠️ Watch index out of range: {index}"
+        user_id_str = str(user_id).strip()
+        product = self.watchlist[index - 1]
+        watchers: list = product.setdefault("watchers", [])
+        if user_id_str in watchers:
+            name = product.get("sku") or product.get("name") or product["url"]
+            return f"⚠️ You are already watching alerts for **{name}**."
+        watchers.append(user_id_str)
+        self._save_watchlist()
+        name = product.get("sku") or product.get("name") or product["url"]
+        return f"✅ You'll be mentioned when **{name}** changes stock status. Use `!unnotify {index}` to stop."
+
+    def unnotify_user(self, index: int, user_id: int | str) -> str:
+        """Remove a user from per-product alerts for a specific watchlist entry."""
+        if index < 1 or index > len(self.watchlist):
+            return f"⚠️ Watch index out of range: {index}"
+        user_id_str = str(user_id).strip()
+        product = self.watchlist[index - 1]
+        watchers: list = product.get("watchers") or []
+        if user_id_str not in watchers:
+            name = product.get("sku") or product.get("name") or product["url"]
+            return f"⚠️ You are not watching alerts for **{name}**."
+        product["watchers"] = [w for w in watchers if w != user_id_str]
+        self._save_watchlist()
+        name = product.get("sku") or product.get("name") or product["url"]
+        return f"✅ You will no longer be mentioned for **{name}**."
+
     def build_subscribers_message(self) -> str:
         if not self.subscribers:
             return "📭 No subscribed users."
@@ -762,7 +792,7 @@ class StockMonitor:
 
     def _build_alert_message(self, product: dict, result: dict, new_status: str) -> str | None:
         discord_config = CONFIG.get("discord", {})
-        mentions = self._get_alert_mentions()
+        mentions = self._get_alert_mentions(product)
         if not discord_config.get("mobile_push", True) and not mentions:
             return None
 
@@ -776,13 +806,16 @@ class StockMonitor:
             parts.append(f"{status_label}: {name} at {site_name}")
         return " | ".join(parts) if parts else None
 
-    def _get_alert_mentions(self) -> list[str]:
+    def _get_alert_mentions(self, product: dict | None = None) -> list[str]:
         discord_config = CONFIG.get("discord", {})
         mentions: list[str] = []
         global_mention = discord_config.get("alert_mention", "")
         if global_mention:
             mentions.append(global_mention)
         mentions.extend(f"<@{user_id}>" for user_id in sorted(self.subscribers))
+        # Per-product watchers
+        if product:
+            mentions.extend(f"<@{user_id}>" for user_id in sorted(product.get("watchers") or []))
 
         unique_mentions: list[str] = []
         seen: set[str] = set()

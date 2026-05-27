@@ -169,6 +169,18 @@ async def unsubscribe(ctx):
     await ctx.send(bot.monitor.unsubscribe_user(ctx.author.id))
 
 
+@bot.command(name="notify")
+async def notify(ctx, index: int):
+    """Get mentioned when a specific watch entry changes stock. Usage: !notify <index>"""
+    await ctx.send(bot.monitor.notify_user(index, ctx.author.id))
+
+
+@bot.command(name="unnotify")
+async def unnotify(ctx, index: int):
+    """Stop being mentioned for a specific watch entry. Usage: !unnotify <index>"""
+    await ctx.send(bot.monitor.unnotify_user(index, ctx.author.id))
+
+
 @bot.command(name="subscribers")
 async def subscribers(ctx):
     """Show current stock alert subscribers."""
@@ -344,9 +356,11 @@ async def help_stock(ctx):
     )
     embed.add_field(name="!watch <url>", value="Add a product URL to monitor", inline=False)
     embed.add_field(name="!whoami", value="Show your Discord user ID for checkout approval config", inline=False)
-    embed.add_field(name="!subscribe", value="Subscribe yourself to stock alert mentions", inline=False)
-    embed.add_field(name="!unsubscribe", value="Remove yourself from stock alert mentions", inline=False)
-    embed.add_field(name="!subscribers", value="Show current stock alert subscribers", inline=False)
+    embed.add_field(name="!subscribe", value="Get mentioned on ALL stock alerts (global)", inline=False)
+    embed.add_field(name="!unsubscribe", value="Remove yourself from all global alerts", inline=False)
+    embed.add_field(name="!subscribers", value="Show global stock alert subscribers", inline=False)
+    embed.add_field(name="!notify <index>", value="Get mentioned when a specific watch entry changes stock (use `!list` for index numbers)", inline=False)
+    embed.add_field(name="!unnotify <index>", value="Stop being mentioned for a specific watch entry", inline=False)
     embed.add_field(name="!unwatch <index|url>", value="Remove a watch by list number or exact URL", inline=False)
     embed.add_field(name="!unwatch_pack <pack_id>", value="Remove all entries for a product pack", inline=False)
     embed.add_field(name="!remove_sku <sku>", value="Remove all entries for a SKU", inline=False)
