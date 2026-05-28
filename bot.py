@@ -29,6 +29,7 @@ class StockBot(commands.Bot):
         self.monitor.load_watchlist()
         self.monitor.load_subscribers()
         await self.add_cog(StockCommands(self))
+        self.tree.clear_commands(guild=None)
         await self.tree.sync()
         if self.monitor_task is None or self.monitor_task.done():
             self.monitor_task = asyncio.create_task(self.monitor.run_loop(), name="stock-monitor")
