@@ -116,27 +116,45 @@ class StockCommands(commands.Cog):
     def __init__(self, bot: "StockBot"):
         self.bot = bot
 
+    async def _safe_respond(self, interaction: discord.Interaction, *args, **kwargs):
+        """Send a response, using followup if already acknowledged."""
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(*args, **kwargs)
+            else:
+                await interaction.response.send_message(*args, **kwargs)
+        except discord.HTTPException as e:
+            _bot_logger.error(f"Failed to respond to interaction: {e}")
+
+    async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        _bot_logger.exception(f"Slash command error ({interaction.command and interaction.command.name}): {error}")
+        await self._safe_respond(interaction, f"⚠️ Something went wrong: {error}", ephemeral=True)
+
     @app_commands.command(name="watch", description="Start watching a product URL for stock alerts")
     @app_commands.describe(url="Product URL — ui.com, amazon.com, bestbuy.com, bhphotovideo.com, newegg.com")
     async def slash_watch(self, interaction: discord.Interaction, url: str):
+        await interaction.response.defer(ephemeral=True)
         result = self.bot.monitor.add_product(url, interaction.user.id)
-        await interaction.response.send_message(result, ephemeral=True)
+        await interaction.followup.send(result, ephemeral=True)
 
     @app_commands.command(name="unwatch", description="Stop watching an item by its list number")
     @app_commands.describe(number="Item number from /list")
     async def slash_unwatch(self, interaction: discord.Interaction, number: int):
+        await interaction.response.defer(ephemeral=True)
         result = self.bot.monitor.unwatch_user_product(number, interaction.user.id)
-        await interaction.response.send_message(result, ephemeral=True)
+        await interaction.followup.send(result, ephemeral=True)
 
     @app_commands.command(name="list", description="Show the products you are currently watching")
     async def slash_list(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         embeds = self.bot.monitor.build_user_watchlist_embeds(interaction.user.id)
-        await interaction.response.send_message(embeds=embeds[:1], ephemeral=True)
+        await interaction.followup.send(embed=embeds[0], ephemeral=True)
         for embed in embeds[1:]:
             await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="status", description="Show bot health and current stock summary")
     async def slash_status(self, interaction: discord.Interaction):
+        await interaction.response.defer()
         monitor_running = bool(self.bot.monitor_task and not self.bot.monitor_task.done())
         uptime_sec = int(time.monotonic() - self.bot._start_time)
         hours, rem = divmod(uptime_sec, 3600)
@@ -156,7 +174,7 @@ class StockCommands(commands.Cog):
         if counts:
             lines = [f"{emoji_map.get(s, '⚪')} {s.replace('_', ' ').title()}: {n}" for s, n in sorted(counts.items())]
             embed.add_field(name="Stock Summary", value="\n".join(lines), inline=False)
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
 
 bot = StockBot()
