@@ -138,7 +138,7 @@ class StockCommands(commands.Cog):
         result = self.bot.monitor.add_product(url, interaction.user.id)
         await interaction.followup.send(result, ephemeral=True)
 
-    @app_commands.command(name="unwatch", description="Stop watching an item by its list number")
+    @app_commands.command(name="delete", description="Stop watching an item by its list number")
     @app_commands.describe(number="Item number from /list")
     async def slash_unwatch(self, interaction: discord.Interaction, number: int):
         await interaction.response.defer(ephemeral=True)

@@ -91,6 +91,17 @@ def detect_site(url: str) -> str | None:
     return None
 
 
+def _short_url(url: str) -> str:
+    """Return a readable short label from a URL: domain › product-slug."""
+    try:
+        parsed = urlparse(url)
+        host = parsed.netloc.lstrip("www.")
+        slug = parsed.path.rstrip("/").rsplit("/", 1)[-1] or host
+        return f"{host} › {slug}"
+    except Exception:
+        return url
+
+
 # How many times to retry a scrape that returns "unknown" before accepting it
 SCRAPE_RETRIES = 2
 RETRY_DELAY = 3  # seconds between retries
@@ -400,20 +411,26 @@ class StockMonitor:
             return [embed]
 
         embeds: list[discord.Embed] = []
-        chunk_size = 10
-        for start in range(0, len(user_list), chunk_size):
+        chunk_size = 20  # Discord allows max 25 fields per embed
+        total = len(user_list)
+        pages = (total + chunk_size - 1) // chunk_size
+        for start in range(0, total, chunk_size):
             chunk = user_list[start:start + chunk_size]
-            embed = discord.Embed(title="Your Watchlist", color=0x5865F2)
-            lines = []
+            page = start // chunk_size + 1
+            title = "Your Watchlist" + (f" (page {page}/{pages})" if pages > 1 else "")
+            embed = discord.Embed(title=title, color=0x5865F2)
             for i, product in enumerate(chunk, start=start + 1):
                 status = product.get("last_status", "unknown")
                 emoji = STATUS_EMOJI.get(status, "⚪")
-                name = product.get("sku") or product.get("name") or product["url"]
-                site = SITE_NAMES.get(product.get("site", ""), product.get("site", ""))
-                price = f" · {product['last_price']}" if product.get("last_price") else ""
-                lines.append(f"`{i}.` {emoji} **{name}** · {site}{price}")
-            embed.description = "\n".join(lines)
-            embed.set_footer(text="Use /unwatch <number> to stop watching an item")
+                status_label = STATUS_LABEL.get(status, "Unknown")
+                url = product["url"]
+                display_name = product.get("sku") or product.get("name") or _short_url(url)
+                site = SITE_NAMES.get(product.get("site", ""), product.get("site", "unknown"))
+                price = f"  ·  {product['last_price']}" if product.get("last_price") else ""
+                field_name = f"{i}.  {display_name}"
+                field_value = f"{emoji} {status_label}  ·  {site}{price}\n[{_short_url(url)}]({url})"
+                embed.add_field(name=field_name, value=field_value, inline=False)
+            embed.set_footer(text=f"{total} item(s) watched  ·  /delete <number> to remove")
             embeds.append(embed)
         return embeds
 
