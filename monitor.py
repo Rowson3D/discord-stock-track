@@ -894,20 +894,9 @@ class StockMonitor:
         return " | ".join(parts)
 
     def _build_alert_message(self, product: dict, result: dict, new_status: str) -> str | None:
-        discord_config = CONFIG.get("discord", {})
+        """Return a mention string so watchers get pinged; embed carries all other info."""
         mentions = self._get_alert_mentions(product)
-        if not discord_config.get("mobile_push", True) and not mentions:
-            return None
-
-        name = result.get("name") or product["name"]
-        site_name = SITE_NAMES.get(product["site"], product["site"])
-        status_label = STATUS_LABEL.get(new_status, new_status)
-        parts = []
-        if mentions:
-            parts.append(" ".join(mentions))
-        if discord_config.get("mobile_push", True):
-            parts.append(f"{status_label}: {name} at {site_name}")
-        return " | ".join(parts) if parts else None
+        return " ".join(mentions) if mentions else None
 
     def _get_alert_mentions(self, product: dict | None = None) -> list[str]:
         discord_config = CONFIG.get("discord", {})
@@ -939,7 +928,8 @@ class StockMonitor:
         color = STATUS_COLOR.get(new_status, 0x99AAB5)
         site_name = SITE_NAMES.get(site, site)
 
-        if old_status == "out_of_stock" and new_status in ("in_stock", "low_stock"):
+        back_in_stock = old_status == "out_of_stock" and new_status in ("in_stock", "low_stock")
+        if back_in_stock:
             title = f"{emoji} Back In Stock"
         elif new_status == "in_stock":
             title = f"{emoji} In Stock"
@@ -950,31 +940,18 @@ class StockMonitor:
 
         embed = discord.Embed(
             title=title,
-            description=f"**{name}**",
-            url=url,
+            description=f"**[{name}]({url})**",
             color=color,
             timestamp=datetime.now(timezone.utc),
         )
-        embed.set_author(name="Tracker Network Stock Bot")
-        embed.add_field(name="Retailer", value=site_name, inline=True)
-        embed.add_field(name="Status", value=f"{emoji} {STATUS_LABEL.get(new_status, new_status)}", inline=True)
 
+        embed.add_field(name="Retailer", value=site_name, inline=True)
         if price:
             embed.add_field(name="Price", value=price, inline=True)
-
         if quantity is not None:
-            embed.add_field(name="Qty Remaining", value=str(quantity), inline=True)
+            embed.add_field(name="In Stock", value=str(quantity), inline=True)
 
-        if old_status != "unknown":
-            embed.add_field(
-                name="Previous Status",
-                value=f"{STATUS_EMOJI.get(old_status, '⚪')} {STATUS_LABEL.get(old_status, old_status)}",
-                inline=True,
-            )
-
-        embed.add_field(name="Action", value=f"[Open product page]({url})", inline=False)
-        embed.add_field(name="Checkout", value=checkout_summary(product), inline=False)
-        embed.set_footer(text=f"{site_name} stock monitor")
+        embed.set_footer(text=f"{site_name}  ·  {_short_url(url)}")
 
         return embed
 
