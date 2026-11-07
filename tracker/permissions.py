@@ -46,9 +46,10 @@ COMMAND_ROLES: dict[str, Role] = {
     "server valuations": Role.OWNER,
     "priority": Role.OWNER,
     "comp": Role.OWNER,
+    "scan": Role.OWNER,  # spends eBay quota
 }
 # Commands whose output contains eBay-derived numbers.
-VALUATION_COMMANDS = frozenset({"opportunities", "value"})
+VALUATION_COMMANDS = frozenset({"opportunities", "value", "scan"})
 
 
 def resolve_role(

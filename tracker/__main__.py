@@ -266,6 +266,46 @@ async def cmd_market_comp(settings: Settings, args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_market_scan(settings: Settings, args: argparse.Namespace) -> int:
+    if not settings.ebay.configured:
+        print("Set EBAY_CLIENT_ID and EBAY_CLIENT_SECRET (production keyset) first.")
+        return 1
+    async with _market(settings) as (market, _):
+        report = await market.scan(limit=args.limit, min_retail_cents=round(args.min_retail * 100))
+    print(
+        f"Priced {report.priced} items ({len(report.valued)} valued, {report.calls} eBay calls); "
+        "asking prices, one per seller; read-only."
+    )
+    print("\nTop flips:")
+    for i in report.top(15):
+        eta = f" ETA {i.restock_eta}" if i.restock_eta and not i.available else ""
+        print(
+            f"  {i.sku:<22} {i.status.value:<12} {format_cents(i.retail_cents):>10} -> "
+            f"{format_cents(i.resale_cents):>10}  net {format_cents(i.net_cents):>9} "
+            f"({i.roi:.0%})  {i.sellers} sellers/{i.listings} listings  {i.confidence}{eta}"
+        )
+    if report.breakouts:
+        print("\nPack breakouts:")
+        for b in sorted(report.breakouts, key=lambda b: -b.pack_net_cents):
+            print(
+                f"  {b.pack_sku:<22} {b.pack_size}x {format_cents(b.pack_cents):>10} "
+                f"({b.status.value})  unit {format_cents(b.unit_cost_cents)} vs "
+                f"~{format_cents(b.single_resale_cents)}  pack net "
+                f"{format_cents(b.pack_net_cents)}  "
+                f"break-even {format_cents(b.breakeven_unit_cents)}/unit"
+            )
+    if report.losers():
+        print("\nLoses money at retail:")
+        for i in report.losers(8):
+            print(
+                f"  {i.sku:<22} {format_cents(i.retail_cents):>10} -> "
+                f"{format_cents(i.resale_cents):>10}  net {format_cents(i.net_cents)}"
+            )
+    for error in report.errors:
+        print(f"  ! {error}")
+    return 0
+
+
 async def cmd_opportunities(settings: Settings, args: argparse.Namespace) -> int:
     async with _market(settings) as (market, sessions):
         await market.revalue_all()
@@ -350,6 +390,10 @@ def build_parser() -> argparse.ArgumentParser:
     comp.add_argument("--quantity", type=int, default=1)
     comp.add_argument("--note")
     comp.set_defaults(handler=cmd_market_comp)
+    scan = market.add_parser("scan", help="read-only live profit scan against eBay")
+    scan.add_argument("--limit", type=int, default=25, help="items to price (1 eBay call each)")
+    scan.add_argument("--min-retail", type=float, default=100.0, help="dollars")
+    scan.set_defaults(handler=cmd_market_scan)
 
     opps = commands.add_parser("opportunities", help="rank resale opportunities")
     opps.add_argument("--limit", type=int, default=20)

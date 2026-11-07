@@ -303,3 +303,20 @@ is served openly.
 
 **Not verified:** a live Discord session (approval DMs, per-server command sync). It needs a
 bot token on the test machine.
+
+**2026-11-07: seller de-duplication and `/scan`**
+- eBay sellers are parsed in memory. Each active seller counts **once, at their cheapest
+  listing**, so one reseller's many listings can't inflate comp counts or confidence. Only the
+  aggregate count of distinct sellers is stored (`ebay_stats.active_listings` vs `active_count`,
+  migration 0008); seller identities never are.
+- `/scan` (owner) and `tracker market scan`: a read-only live profit scan. It prices pack
+  singles first, then buyable and high-value items, against eBay. It reports top flips, **pack
+  breakouts** (per-unit cost vs single resale, profit per pack, break-even resale per unit), and
+  items that lose money at retail. Nothing is stored, no alerts fire, and only one scan runs
+  at a time.
+- Migration 0008 initially lacked a server default and **failed on databases with existing eBay
+  stats**. Caught before release; the new `test_upgrade_preserves_existing_data` now upgrades a
+  populated database.
+- Live scan (25 calls): UVC-G5-Bullet 3-pack is about +$186 per pack (10 sellers / 15 listings;
+  break-even $152.85 per unit). UAP-AC-PRO loses $81.50 at retail and its 5-pack loses $361.
+  234 tests.

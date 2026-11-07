@@ -127,6 +127,7 @@ mention role, admin role, ping rules, cooldown, and digest size (`/server config
 | `/server settings`, `/server configure`, `/server audit` | Server admin | This server's settings and audit log. |
 | `/server list`, `/server approve`, `/server block`, `/server valuations` | Owner | Server allowlist and valuation display. |
 | `/comp`, `/priority`, `/value … refresh:True` | Owner | Manual comps, polling priority, fresh eBay data. |
+| `/scan [limit] [min_retail] [public]` | Owner | Live read-only profit scan of the store against eBay: top flips, pack breakouts (buy a multi-pack, sell singles, with the per-unit break-even), and items that lose money. One eBay call per item; nothing is stored or alerted. |
 
 Alert messages include **Open** and **Watch** buttons. Both work for anyone in an approved
 server and survive restarts.
@@ -207,6 +208,7 @@ uv run tracker opportunities --available  # ranked resale opportunities
 uv run tracker market value u7-pro         # valuation + comps (--all shows excluded ones)
 uv run tracker market collect u7-pro       # fetch eBay comps now
 uv run tracker market comp u7-pro 265 --shipping 10   # record a sold comp
+uv run tracker market scan --limit 25     # live read-only profit scan (top flips, pack breakouts)
 uv run tracker import-legacy           # manual import of old watchlist/subscribers
 uv run tracker db upgrade              # apply migrations (also automatic on start)
 ```

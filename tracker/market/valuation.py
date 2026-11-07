@@ -43,6 +43,7 @@ class Comp:
     sold_at: datetime | None
     observed_at: datetime
     match_score: float = 1.0
+    seller: str | None = None  # In-memory only; collapses one seller's many listings.
 
     @property
     def unit_cents(self) -> int:
@@ -58,10 +59,11 @@ class MarketStats:
     sold_median_cents: int | None = None
     sold_p25_cents: int | None = None
     sold_p75_cents: int | None = None
-    active_count: int = 0
+    active_count: int = 0  # Distinct sellers (each counted once, at their cheapest).
     active_median_cents: int | None = None
     active_p25_cents: int | None = None
     active_low_cents: int | None = None
+    active_listings: int = 0  # Matching listings before collapsing by seller.
 
     def without_active(self) -> MarketStats:
         return MarketStats(
@@ -126,7 +128,8 @@ def summarize(
     usable = [c for c in comps if c.condition in RESALE_CONDITIONS and c.match_score >= 0.5]
     sold_cutoff = now - timedelta(days=settings.sold_window_days)
     sold = [c for c in usable if c.sold and (c.sold_at or c.observed_at) >= sold_cutoff]
-    active = [c for c in usable if not c.sold]
+    active = dedupe_sellers([c for c in usable if not c.sold])
+    active_listings = sum(1 for c in usable if not c.sold)
     month = now - timedelta(days=30)
 
     sold_units = drop_outliers([c.unit_cents for c in sold], retail_cents)
@@ -141,7 +144,22 @@ def summarize(
         active_median_cents=percentile(active_units, 0.5),
         active_p25_cents=percentile(active_units, 0.25),
         active_low_cents=min(active_units) if active_units else None,
+        active_listings=active_listings,
     )
+
+
+def dedupe_sellers(comps: Sequence[Comp]) -> list[Comp]:
+    """One active data point per seller: their cheapest unit price.
+
+    A reseller with ten near-identical listings is one opinion about price, not ten, and
+    shouldn't inflate the comp count or the confidence. Unknown sellers count individually.
+    """
+    best: dict[str, Comp] = {}
+    for index, comp in enumerate(comps):
+        key = comp.seller or f"#unknown-{index}"
+        if key not in best or comp.unit_cents < best[key].unit_cents:
+            best[key] = comp
+    return list(best.values())
 
 
 def confidence_for(sold: int, active: int, min_comps: int) -> str:

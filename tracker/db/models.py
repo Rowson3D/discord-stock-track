@@ -205,6 +205,8 @@ class EbayStats(Base):
     active_median_cents: Mapped[int | None] = mapped_column(Integer)
     active_p25_cents: Mapped[int | None] = mapped_column(Integer)
     active_low_cents: Mapped[int | None] = mapped_column(Integer)
+    # Matching listings before collapsing by seller (active_count = distinct sellers).
+    active_listings: Mapped[int] = mapped_column(Integer, default=0)
     # How many fetched results matched this variant vs. were rejected (counts only).
     matched: Mapped[int] = mapped_column(Integer, default=0)
     excluded: Mapped[int] = mapped_column(Integer, default=0)

@@ -30,6 +30,7 @@ from tracker.guilds import (
 )
 from tracker.market.ebay import EbayItem
 from tracker.market.matching import MatchResult
+from tracker.market.scan import ScanReport
 from tracker.outbox import RadarEvent, load_events
 from tracker.permissions import Role, check_access, resolve_role
 from tracker.queries import (
@@ -85,6 +86,66 @@ def _row_line(row: ListingRow) -> str:
     if listing.delisted_at:
         parts.append("delisted")
     return " · ".join(parts)
+
+
+def _clip(lines: list[str], limit: int = 1024) -> str:
+    text = ""
+    for line in lines:
+        if len(text) + len(line) + 1 > limit:
+            break
+        text += line + "\n"
+    return text.rstrip() or "—"
+
+
+def scan_embed(report: ScanReport, settings: MarketSettings) -> discord.Embed:
+    embed = discord.Embed(
+        title="🔎 FlipScout scan",
+        description=(
+            f"Priced **{report.priced}** items against live eBay asking prices; "
+            f"**{len(report.valued)}** had enough sellers to value. "
+            f"{report.calls} eBay calls."
+        ),
+        color=0xF1C40F,
+        timestamp=report.at,
+    )
+    top = []
+    for item in report.top(8):
+        emoji = status_text(item.status).split(" ")[0]
+        eta = f" · ETA {item.restock_eta}" if item.restock_eta and not item.available else ""
+        top.append(
+            f"{emoji} **{item.sku}** {format_cents(item.retail_cents)} → "
+            f"~{format_cents(item.resale_cents)} · **+{format_cents(item.net_cents)}** "
+            f"({item.roi:.0%}) · {item.sellers} sellers · {item.confidence}{eta}"
+        )
+    embed.add_field(name="💰 Top flips", value=_clip(top), inline=False)
+    packs = []
+    for b in report.best_breakouts(6):
+        emoji = status_text(b.status).split(" ")[0]
+        packs.append(
+            f"{emoji} **{b.pack_sku}** ({b.pack_size}× for {format_cents(b.pack_cents)}) → "
+            f"{format_cents(b.unit_cost_cents)}/unit vs ~{format_cents(b.single_resale_cents)}"
+            f" · **+{format_cents(b.pack_net_cents)}**/pack · break-even "
+            f"{format_cents(b.breakeven_unit_cents)}/unit"
+        )
+    if packs:
+        embed.add_field(name="📦 Pack breakouts", value=_clip(packs), inline=False)
+    losers = [
+        f"**{i.sku}** {format_cents(i.retail_cents)} → ~{format_cents(i.resale_cents)} · "
+        f"{format_cents(i.net_cents)}"
+        for i in report.losers(4)
+    ]
+    if losers:
+        embed.add_field(name="📉 Loses money at retail", value=_clip(losers), inline=False)
+    if report.errors:
+        embed.add_field(name="⚠️ Errors", value=_clip(report.errors[:5]), inline=False)
+    embed.set_footer(
+        text=(
+            f"Asking prices, one per seller (no sold data) · net after {settings.fee_rate:.1%} "
+            f"+ {format_cents(settings.fixed_fee_cents)} fees and "
+            f"{format_cents(settings.outbound_shipping_cents)} shipping · read-only"
+        )
+    )
+    return embed
 
 
 def _paginate(lines: list[str], limit: int = _MAX_LINES) -> str:
@@ -682,6 +743,37 @@ class TrackerCommands(commands.Cog):
         await interaction.response.send_message(
             f"✅ Recorded {format_cents(round(price * 100))} comp for `{variant.sku}`: {summary}.",
             ephemeral=True,
+        )
+
+    @app_commands.command(description="[owner] Live profit scan of the store against eBay")
+    @app_commands.describe(
+        limit="How many items to price (one eBay call each)",
+        min_retail="Only items costing at least this much at retail ($)",
+        public="Post the result in this channel instead of only to you",
+    )
+    async def scan(
+        self,
+        interaction: discord.Interaction[Any],
+        limit: app_commands.Range[int, 5, 60] = 25,
+        min_retail: app_commands.Range[float, 0, 10000] = 100.0,
+        public: bool = False,
+    ) -> None:
+        if not self.ctx.market.collecting:
+            await interaction.response.send_message(
+                "⚠️ eBay isn't configured (EBAY_CLIENT_ID / EBAY_CLIENT_SECRET).", ephemeral=True
+            )
+            return
+        if self.ctx.market.scanning:
+            await interaction.response.send_message(
+                "⏳ A scan is already running; try again in a minute.", ephemeral=True
+            )
+            return
+        show_public = public and self._guild(interaction).show_valuations
+        await interaction.response.defer(ephemeral=not show_public, thinking=True)
+        report = await self.ctx.market.scan(limit=limit, min_retail_cents=round(min_retail * 100))
+        await self._audit(interaction, "market.scan", f"{report.priced} items", calls=report.calls)
+        await interaction.followup.send(
+            embed=scan_embed(report, self.ctx.settings.market), ephemeral=not show_public
         )
 
     # ── admin ─────────────────────────────────────────────────────────────

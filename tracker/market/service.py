@@ -11,11 +11,13 @@ cheap accessories skipped unless someone watches them.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from typing import TYPE_CHECKING
 
 from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -44,6 +46,9 @@ from tracker.market.valuation import (
 from tracker.outbox import Dispatcher
 from tracker.settings import MarketSettings
 
+if TYPE_CHECKING:
+    from tracker.market.scan import ScanReport
+
 logger = logging.getLogger(__name__)
 
 SOURCE_MANUAL = "manual"
@@ -57,6 +62,7 @@ STAT_FIELDS = (
     "active_median_cents",
     "active_p25_cents",
     "active_low_cents",
+    "active_listings",
 )
 
 
@@ -115,6 +121,7 @@ class MarketService:
         self._settings = settings
         self._dispatcher = dispatcher
         self._clock = clock
+        self._scan_lock = asyncio.Lock()
 
     @property
     def collecting(self) -> bool:
@@ -240,6 +247,7 @@ class MarketService:
                     sold_at=item.sold_at,
                     observed_at=now,
                     match_score=result.score,
+                    seller=item.seller,
                 )
             )
         stats = summarize(comps, retail_cents, self._settings, now)
@@ -304,6 +312,28 @@ class MarketService:
                 )
             )
         return (await self.revalue([variant_id])).get(variant_id)
+
+    # ── on-demand scan ────────────────────────────────────────────────────
+
+    @property
+    def scanning(self) -> bool:
+        return self._scan_lock.locked()
+
+    async def scan(self, *, limit: int = 25, min_retail_cents: int = 10000) -> ScanReport:
+        """Read-only live profit scan (nothing stored, no alerts). One scan at a time."""
+        from tracker.market.scan import run_scan  # Local import: scan imports this module.
+
+        if self._ebay is None:
+            raise EbayError("eBay is not configured (EBAY_CLIENT_ID / EBAY_CLIENT_SECRET)")
+        async with self._scan_lock:
+            return await run_scan(
+                self._sessions,
+                self._ebay,
+                self._settings,
+                limit=limit,
+                min_retail_cents=min_retail_cents,
+                now=self._clock(),
+            )
 
     # ── valuation ─────────────────────────────────────────────────────────
 

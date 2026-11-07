@@ -50,6 +50,8 @@ class EbayItem:
     sold: bool
     sold_at: datetime | None = None
     sold_quantity: int = 1
+    # Used in memory to count distinct sellers; never stored (eBay no-persist compliance).
+    seller: str | None = None
 
 
 def _parse_time(value: Any) -> datetime | None:
@@ -72,6 +74,13 @@ def _shipping(item: dict[str, Any]) -> int | None:
     return min(costs) if costs else None
 
 
+def _seller(item: dict[str, Any]) -> str | None:
+    seller = item.get("seller")
+    if isinstance(seller, dict) and seller.get("username"):
+        return str(seller["username"]).lower()
+    return None
+
+
 def parse_active(payload: dict[str, Any]) -> list[EbayItem]:
     items: list[EbayItem] = []
     for item in payload.get("itemSummaries") or []:
@@ -89,6 +98,7 @@ def parse_active(payload: dict[str, Any]) -> list[EbayItem]:
                 currency=str(price.get("currency") or "USD"),
                 condition_id=item.get("conditionId"),
                 sold=False,
+                seller=_seller(item),
             )
         )
     return items
@@ -113,6 +123,7 @@ def parse_sold(payload: dict[str, Any]) -> list[EbayItem]:
                 sold=True,
                 sold_at=_parse_time(item.get("lastSoldDate")),
                 sold_quantity=int(item.get("totalSoldQuantity") or 1),
+                seller=_seller(item),
             )
         )
     return items
