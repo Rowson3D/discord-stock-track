@@ -132,6 +132,10 @@ class EbayClient:
     async def aclose(self) -> None:
         await self._client.aclose()
 
+    def _location(self) -> list[str]:
+        country = self._settings.item_location_country.strip().upper()
+        return [f"itemLocationCountry:{country}"] if country else []
+
     async def _token(self, scope: str) -> str:
         cached = self._tokens.get(scope)
         if cached and cached[1] > time.monotonic() + 60:
@@ -183,7 +187,7 @@ class EbayClient:
     async def search_active(
         self, query: str, *, min_price_cents: int | None = None, limit: int = 100
     ) -> list[EbayItem]:
-        filters = ["buyingOptions:{FIXED_PRICE}", "conditionIds:{1000|1500}"]
+        filters = ["buyingOptions:{FIXED_PRICE}", "conditionIds:{1000|1500}", *self._location()]
         if min_price_cents:
             filters += [f"price:[{min_price_cents / 100:.2f}..]", "priceCurrency:USD"]
         payload = await self._get(
@@ -198,7 +202,7 @@ class EbayClient:
     ) -> list[EbayItem]:
         if not self.insights_enabled:
             return []
-        filters = ["conditionIds:{1000|1500}"]
+        filters = ["conditionIds:{1000|1500}", *self._location()]
         if min_price_cents:
             filters += [f"price:[{min_price_cents / 100:.2f}..]", "priceCurrency:USD"]
         try:

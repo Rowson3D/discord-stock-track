@@ -240,6 +240,9 @@ class EbaySettings(BaseSettings):
     api_base: str = "https://api.ebay.com"
     # Sold prices need eBay's Marketplace Insights approval; auto-disabled if refused.
     use_marketplace_insights: bool = True
+    # Only comps located in this country (overseas resellers inflate asking prices with VAT,
+    # import costs, etc.). Empty = any location.
+    item_location_country: str = "US"
 
     @property
     def configured(self) -> bool:

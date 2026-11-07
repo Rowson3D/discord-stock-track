@@ -25,6 +25,7 @@ from tracker.db.models import (
     Event,
     Listing,
     MarketComp,
+    Product,
     Valuation,
     Variant,
     Watch,
@@ -205,6 +206,8 @@ class MarketService:
             if variant is None:
                 raise ValueError(f"unknown variant {variant_id}")
             sku, pack = variant.sku, variant.pack_size
+            product = await session.get(Product, variant.product_id)
+            product_name = product.name if product else None
             catalog = list(await session.scalars(select(Variant.sku)))
             retail = await retail_listing(session, variant_id)
             retail_cents = retail.price_cents if retail else None
@@ -215,7 +218,7 @@ class MarketService:
         sold = await self._ebay.search_sold(query, min_price_cents=floor)
 
         report = CollectReport(variant_id, sku, query, fetched=len(active) + len(sold))
-        matcher = VariantMatcher(sku, pack, catalog)
+        matcher = VariantMatcher(sku, pack, catalog, product_name)
         comps: list[Comp] = []
         for item in [*active, *sold]:
             result = matcher.match(item.title, item.condition_id)

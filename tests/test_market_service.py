@@ -83,6 +83,26 @@ async def test_client_auth_headers_filters_and_token_reuse():
     assert search.headers["X-EBAY-C-MARKETPLACE-ID"] == "EBAY_US"
     assert "price:[56.70..]" in search.url.params["filter"]
     assert "conditionIds:{1000|1500}" in search.url.params["filter"]
+    assert "itemLocationCountry:US" in search.url.params["filter"]
+
+
+async def test_item_location_filter_applies_to_sold_and_can_be_disabled():
+    transport, seen = _ebay_transport()
+    client = EbayClient(_ebay_settings(), transport=transport)
+    await client.search_sold("q")
+    await client.aclose()
+    sold = next(r for r in seen if r.url.path.endswith("item_sales/search"))
+    assert "itemLocationCountry:US" in sold.url.params["filter"]
+
+    transport, seen = _ebay_transport()
+    anywhere = EbaySettings(  # type: ignore[call-arg]
+        _env_file=None, client_id="id", client_secret="secret", item_location_country=""
+    )
+    client = EbayClient(anywhere, transport=transport)
+    await client.search_active("q")
+    await client.aclose()
+    search = next(r for r in seen if r.url.path.endswith("item_summary/search"))
+    assert "itemLocationCountry" not in search.url.params["filter"]
 
 
 async def test_insights_refusal_disables_sold_search():
