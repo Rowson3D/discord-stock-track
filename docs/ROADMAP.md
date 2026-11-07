@@ -192,9 +192,30 @@ Each phase ends in a working, deployable state. The old bot keeps running until 
   cheap, high-signal restock feed for the radar.
 - `whats-new` redirects to the home page, so it's skipped as a category.
 
-**Next (rest of Phase 1):** a continuous scheduler (catalog crawl every N minutes, plus
-priority product-page polls for watched, EA, and recently-sold-out SKUs), the freshly-stocked feed,
-delisting detection, and multi-region verification.
+**2026-11-07: Phase 1 done** (same branch)
+- `tracker run`: an asyncio scheduler (single-flight jobs, jitter, exponential backoff) runs a
+  catalog crawl (5 min), the home feeds (1 min), and hot product-page polls (10s, 4 pages per
+  tick) for each region.
+- Freshly-stocked and what's-new feeds queue immediate product-page polls. New listings are
+  polled too, because product pages are the only source of the Early Access flag.
+- Hot listings: watched, high priority, Early Access, coming soon, restock ETA within 3 days, or a
+  sold-out/restock/new/relisted event in the last 6h.
+- Delisting is inferred only from complete crawls covering at least 50% of active listings, after a
+  45-minute grace period. Seeing a delisted listing again emits `relisted`.
+- Durable outbox: events are dispatched from the DB (`notified_at`), delivered at least once,
+  and events older than 60 minutes (e.g. after downtime) are recorded but not announced. A
+  `LoggingSink` is wired in now; the Discord sink plugs in during Phase 2.
+- `tracker radar` shows the event feed.
+- Multi-region verified live: `ca`/`uk`/`eu` live on `{region}.store.ui.com`, while `au` silently
+  serves the US store and is now rejected. The **CA store sells US SKUs in CAD** (831 variants
+  shared with the US store), which makes cross-border price spreads available, e.g. UDM-Pro-Max
+  $599 USD vs $859 CAD. The CA store also uses an `Unavailable` status, mapped to out of stock.
+- 80 tests. Live run: 2 regions, 1,682 listings, 35 feed-triggered product polls drained cleanly.
+
+**Not yet verified:** an Early Access drop observed live (no EA items were public during testing),
+and graceful SIGTERM shutdown on Linux/Docker (handler installed, untested on Windows).
+
+**Next: Phase 2 (alerts and the Discord rebuild).**
 
 ## 5. Risks and open questions
 

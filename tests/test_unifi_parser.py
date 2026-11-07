@@ -16,7 +16,9 @@ from tracker.sources.unifi.parser import (
     is_category_page,
     map_status,
     pack_size_from_title,
+    page_region,
     parse_category_page,
+    parse_home_page,
     parse_product_page,
     strip_region_suffix,
 )
@@ -115,6 +117,7 @@ def test_find_category_slugs(fixture_text: Callable[[str], str]):
         ("Available", StockStatus.IN_STOCK),
         ("SoldOut", StockStatus.OUT_OF_STOCK),
         ("ComingSoon", StockStatus.COMING_SOON),
+        ("Unavailable", StockStatus.OUT_OF_STOCK),
         ("LIMITED_STOCK", StockStatus.LOW_STOCK),
         ("SomethingNew", StockStatus.UNKNOWN),
         (None, StockStatus.UNKNOWN),
@@ -164,3 +167,40 @@ def test_category_parse_error_on_wrong_shape():
         parse_category_page({"props": {"pageProps": {}}}, base_url=BASE)
     with pytest.raises(UnifiParseError):
         parse_product_page({"props": {"pageProps": {}}}, base_url=BASE)
+
+
+def test_home_page_feeds(fixture_text: Callable[[str], str]):
+    home = parse_home_page(fixture_text("unifi/home.html"))
+    assert home.region == "us"
+    assert "all-wifi" in home.category_slugs
+    assert len(home.freshly_stocked) == 4
+    first = home.freshly_stocked[0]
+    assert first.regional_sku == "USW-Pro-48-POE"
+    assert first.product_slug == "usw-pro-48-poe"
+    assert first.stocked_at == datetime(2026, 11, 6, 16, 7, 13, 766000, tzinfo=UTC)
+    assert home.whats_new_slugs[0] == "usw-lr-switch-8-poe"
+    assert len(home.whats_new_slugs) == len(set(home.whats_new_slugs))
+
+
+def test_canadian_store_sells_us_skus_in_cad(fixture_text: Callable[[str], str]):
+    data = extract_next_data(fixture_text("unifi/product_u7-pro_ca.html"))
+    assert page_region(data) == "ca"
+    single = parse_product_page(data, base_url="https://ca.store.ui.com")[0]
+    assert single.region == "ca"
+    assert single.external_id == "U7-Pro-US"
+    assert single.sku == "U7-Pro"  # same canonical variant as the US listing
+    assert single.currency == "CAD"
+    assert single.url == "https://ca.store.ui.com/ca/en/products/u7-pro"
+
+
+@pytest.mark.parametrize(
+    ("sku", "region", "expected"),
+    [
+        ("U7-Pro-US", "ca", "U7-Pro"),
+        ("U7-Pro", "uk", "U7-Pro"),
+        ("U7-Pro-EU", "eu", "U7-Pro"),
+        ("U7-Pro-JP", "jp", "U7-Pro"),
+    ],
+)
+def test_strip_region_suffix_per_region(sku: str, region: str, expected: str):
+    assert strip_region_suffix(sku, region) == expected

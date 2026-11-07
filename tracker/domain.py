@@ -48,6 +48,8 @@ class EventKind(StrEnum):
     PRICE_CHANGE = "price_change"
     RESTOCK_ETA = "restock_eta"
     EARLY_ACCESS = "early_access"
+    DELISTED = "delisted"
+    RELISTED = "relisted"
 
 
 @dataclass(frozen=True, slots=True)

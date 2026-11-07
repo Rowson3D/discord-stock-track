@@ -10,6 +10,7 @@ from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
 
+from tracker.app import run_tracker
 from tracker.db.migrate import upgrade_async
 from tracker.db.session import create_engine, create_sessionmaker
 from tracker.domain import ListingSnapshot, format_cents
@@ -17,6 +18,7 @@ from tracker.http import HttpClient
 from tracker.ingest import Ingestor
 from tracker.legacy import import_legacy
 from tracker.logconfig import configure_logging
+from tracker.outbox import load_events
 from tracker.settings import Settings, get_settings
 from tracker.sources.unifi import UnifiStore
 
@@ -133,6 +135,29 @@ async def cmd_import_legacy(settings: Settings, args: argparse.Namespace) -> int
     return 1 if report.unresolved else 0
 
 
+async def cmd_run(settings: Settings, args: argparse.Namespace) -> int:
+    await run_tracker(settings, regions=[args.region] if args.region else None)
+    return 0
+
+
+async def cmd_radar(settings: Settings, args: argparse.Namespace) -> int:
+    await upgrade_async(settings.app.resolved_database_url)
+    engine = create_engine(settings.app.resolved_database_url)
+    try:
+        async with create_sessionmaker(engine)() as session:
+            events = await load_events(
+                session, pending_only=False, limit=args.limit, kinds=args.kind or None
+            )
+    finally:
+        await engine.dispose()
+    if not events:
+        print("No radar events yet. Run `tracker run` or `tracker unifi crawl --save`.")
+        return 0
+    for event in reversed(events):
+        print(f"{event.occurred_at:%Y-%m-%d %H:%M} UTC  {event.summary()}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tracker", description=__doc__)
     parser.add_argument("-v", "--verbose", action="store_true", help="verbose output")
@@ -163,6 +188,17 @@ def build_parser() -> argparse.ArgumentParser:
     crawl.add_argument("--region", help="single region (default: UNIFI_STORE_REGIONS)")
     crawl.add_argument("--save", action="store_true", help="store results and emit radar events")
     crawl.set_defaults(handler=cmd_unifi_crawl)
+
+    run = commands.add_parser("run", help="run the continuous tracker (Ctrl+C to stop)")
+    run.add_argument("--region", help="single region (default: UNIFI_STORE_REGIONS)")
+    run.set_defaults(handler=cmd_run)
+
+    radar = commands.add_parser("radar", help="show recent radar events")
+    radar.add_argument("--limit", type=int, default=30)
+    radar.add_argument(
+        "--kind", action="append", help="filter by kind (repeatable), e.g. --kind back_in_stock"
+    )
+    radar.set_defaults(handler=cmd_radar)
     return parser
 
 
@@ -183,7 +219,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         settings.app.log_file,
         settings.app.log_json,
     )
-    return asyncio.run(args.handler(settings, args))
+    try:
+        return asyncio.run(args.handler(settings, args))
+    except KeyboardInterrupt:
+        return 130
 
 
 if __name__ == "__main__":

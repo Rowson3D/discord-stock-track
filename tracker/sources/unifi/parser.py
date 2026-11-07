@@ -6,6 +6,11 @@ payload as JSON, so no browser is needed. Pages of interest:
 * product page  `/{region}/{lang}/products/{slug}`  → `pageProps.collection.products[]`
   (the current product is `pageProps.currentProductId`; only these carry `isEarlyAccess`)
 * category page `/{region}/{lang}/category/{slug}`  → `pageProps.subCategories[].products[]`
+* home page     `/{region}/{lang}`                  → category links, `freshlyStockedProducts`
+  (SKU + `stockedAt`, no status) and `whatsNewCards` (new launches)
+
+Non-US stores live on `{region}.store.ui.com`. Unsupported regions (e.g. `au`) are silently
+served the US store, so callers must check `page_region()` against what they asked for.
 """
 
 from __future__ import annotations
@@ -38,6 +43,8 @@ STATUS_MAP: dict[str, StockStatus] = {
     "lowstock": StockStatus.LOW_STOCK,
     "soldout": StockStatus.OUT_OF_STOCK,
     "outofstock": StockStatus.OUT_OF_STOCK,
+    # Seen in the CA store for an unpriced product not sold there (2026-11-07).
+    "unavailable": StockStatus.OUT_OF_STOCK,
     "comingsoon": StockStatus.COMING_SOON,
     "preorder": StockStatus.COMING_SOON,
 }
@@ -45,6 +52,22 @@ STATUS_MAP: dict[str, StockStatus] = {
 
 class UnifiParseError(ValueError):
     """The page didn't contain the data shape we expect. Treat as a schema canary."""
+
+
+@dataclass(frozen=True, slots=True)
+class FreshlyStocked:
+    regional_sku: str
+    product_slug: str
+    stocked_at: datetime | None
+    is_new: bool
+
+
+@dataclass(slots=True)
+class HomePage:
+    region: str
+    category_slugs: list[str] = field(default_factory=list)
+    freshly_stocked: list[FreshlyStocked] = field(default_factory=list)
+    whats_new_slugs: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -86,9 +109,22 @@ def pack_size_from_title(title: str | None) -> int:
     return 1
 
 
+# Regional SKU suffixes. The Canadian store sells the US SKUs ("U7-Pro-US", priced in CAD);
+# UK and EU SKUs observed so far carry no suffix at all.
+REGION_SKU_SUFFIXES: dict[str, tuple[str, ...]] = {
+    "us": ("-US",),
+    "ca": ("-US", "-CA"),
+    "uk": ("-UK",),
+    "eu": ("-EU",),
+}
+
+
 def strip_region_suffix(sku: str, region: str) -> str:
-    suffix = f"-{region}".lower()
-    return sku[: -len(suffix)] if sku.lower().endswith(suffix) else sku
+    """Canonical cross-region SKU, so one variant links its listings in every store."""
+    for suffix in REGION_SKU_SUFFIXES.get(region, (f"-{region.upper()}",)):
+        if sku.lower().endswith(suffix.lower()):
+            return sku[: -len(suffix)]
+    return sku
 
 
 def product_url(base_url: str, region: str, language: str, slug: str) -> str:
@@ -125,6 +161,11 @@ def _money(value: Any) -> tuple[int | None, str | None]:
 def _route(data: dict[str, Any]) -> tuple[str, str]:
     query = data.get("query") or {}
     return str(query.get("store") or "us"), str(query.get("language") or "en")
+
+
+def page_region(data: dict[str, Any]) -> str:
+    """The store region that actually rendered the page."""
+    return _route(data)[0]
 
 
 def snapshots_from_product(
@@ -238,6 +279,33 @@ def parse_category_page(data: dict[str, Any], *, base_url: str) -> CategoryPage:
                 )
             )
     return page
+
+
+def parse_home_page(html: str) -> HomePage:
+    data = extract_next_data(html)
+    page_props = data.get("props", {}).get("pageProps") or {}
+    region = page_region(data)
+    home = HomePage(region=region, category_slugs=find_category_slugs(html, region))
+
+    for entry in page_props.get("freshlyStockedProducts") or []:
+        slug = (entry.get("product") or {}).get("slug")
+        if entry.get("sku") and slug:
+            home.freshly_stocked.append(
+                FreshlyStocked(
+                    regional_sku=entry["sku"],
+                    product_slug=slug,
+                    stocked_at=_parse_datetime(entry.get("stockedAt")),
+                    is_new=bool(entry.get("isNew")),
+                )
+            )
+
+    seen: dict[str, None] = {}
+    for card in page_props.get("whatsNewCards") or []:
+        slug = (card.get("product") or {}).get("slug")
+        if slug:
+            seen.setdefault(slug, None)
+    home.whats_new_slugs = list(seen)
+    return home
 
 
 def find_category_slugs(html: str, region: str | None = None) -> list[str]:

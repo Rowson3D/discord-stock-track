@@ -20,10 +20,20 @@ uv run tracker unifi product u7-pro       # parse one product page
 uv run tracker unifi crawl                # crawl the whole store, show unavailable items
 uv run tracker unifi crawl --save         # store results in data/tracker.db, print radar events
 uv run tracker import-legacy              # migrate data/watchlist.json + subscribers.json
+uv run tracker run                        # continuous tracking (Ctrl+C to stop); events go to the log
+uv run tracker radar --limit 50           # recent radar events (back in stock, price, ETA, EA, ...)
 uv run tracker db upgrade                 # apply database migrations
 uv run pytest                             # tests (parsers run against recorded store pages)
 uv run ruff check . && uv run ruff format --check .
 ```
+
+`tracker run` combines three loops per region (set `UNIFI_STORE_REGIONS=us,ca,uk,eu`):
+a full catalog crawl every 5 minutes, the home page's freshly-stocked and what's-new feeds
+every minute, and "hot" product-page polls every 10 seconds. Hot listings are watched,
+high-priority, Early Access, coming soon, restocking within 3 days, or recently sold out or
+restocked. Events go into the database first and are dispatched from there, so nothing is
+lost across restarts. Listings missing from complete crawls for 45 minutes are marked
+delisted.
 
 Schema changes: edit `tracker/db/models.py`, then
 `uv run alembic revision --autogenerate -m "describe change"`. `tests/test_migrations.py` fails if

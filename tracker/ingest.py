@@ -6,6 +6,8 @@ Rules:
   and cause missed back-in-stock transitions).
 * The first time a (source, region) is seen is a *baseline*: rows are created silently,
   without `new_listing` events, so an initial catalog crawl doesn't flood the radar.
+* Delisting is inferred, never observed: `mark_delisted()` flags listings that no source has
+  confirmed for a grace period. Seeing a delisted listing again relists it.
 """
 
 from __future__ import annotations
@@ -52,6 +54,43 @@ class Ingestor:
             await self._ingest_one(snapshot, now, report)
         await self._session.flush()
         return report
+
+    async def mark_delisted(
+        self, source: str, region: str, *, stale_before: datetime, now: datetime | None = None
+    ) -> list[Event]:
+        """Flag listings in (source, region) not confirmed since `stale_before` as delisted.
+
+        Call only after a *complete* crawl of that source/region, otherwise a failed
+        category would delist everything in it.
+        """
+        now = now or datetime.now(UTC)
+        stale = (
+            await self._session.scalars(
+                select(Listing).where(
+                    Listing.source == source,
+                    Listing.region == region,
+                    Listing.enabled.is_(True),
+                    Listing.delisted_at.is_(None),
+                    Listing.last_checked_at < stale_before,
+                )
+            )
+        ).all()
+        events: list[Event] = []
+        for listing in stale:
+            listing.delisted_at = now
+            listing.last_changed_at = now
+            if self._emit_events:
+                event = Event(
+                    listing=listing,
+                    kind=EventKind.DELISTED.value,
+                    occurred_at=now,
+                    old_value=listing.status,
+                    new_value=None,
+                )
+                self._session.add(event)
+                events.append(event)
+        await self._session.flush()
+        return events
 
     async def _is_baseline(self, source: str, region: str) -> bool:
         key = (source, region)
@@ -137,16 +176,20 @@ class Ingestor:
             listing.url = snapshot.url
 
         listing.last_checked_at = now
+        relisted = listing.delisted_at is not None
+        if relisted:
+            listing.delisted_at = None
+            events.append((EventKind.RELISTED, None, snapshot.sku))
 
         if not snapshot.status.is_known:
             listing.consecutive_unknowns += 1
             report.unknown_skipped += 1
-            if not created:
+            if not created and not relisted:
                 return
         else:
             listing.consecutive_unknowns = 0
 
-        changed = self._apply(listing, snapshot, now, events) or created
+        changed = self._apply(listing, snapshot, now, events) or created or relisted
         if not changed:
             report.unchanged += 1
             return

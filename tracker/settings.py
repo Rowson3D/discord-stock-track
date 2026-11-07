@@ -98,10 +98,41 @@ class UnifiSettings(BaseSettings):
 
     _split = field_validator("regions", "extra_categories", mode="before")(_split_commas)
 
-    @field_validator("base_url")
+    # Non-US stores are served from per-region subdomains (ca/uk/eu.store.ui.com).
+    regional_origin_template: str = "https://{region}.store.ui.com"
+
+    @field_validator("base_url", "regional_origin_template")
     @classmethod
     def _strip_slash(cls, value: str) -> str:
         return value.rstrip("/")
+
+    def origin(self, region: str) -> str:
+        if region == "us":
+            return self.base_url
+        return self.regional_origin_template.format(region=region)
+
+
+class MonitorSettings(BaseSettings):
+    """Polling cadence for the continuous tracker (`tracker run`)."""
+
+    model_config = _config("TRACKER_MONITOR_")
+
+    # Full catalog crawl per region (~10 requests each).
+    catalog_interval_seconds: float = Field(default=300, ge=30)
+    # Home page check for the freshly-stocked and what's-new feeds (1 request).
+    home_interval_seconds: float = Field(default=60, ge=10)
+    # How often the hot-listing poller wakes up, and how many product pages it may fetch per run.
+    hot_tick_seconds: float = Field(default=10, ge=1)
+    hot_products_per_tick: int = Field(default=4, ge=1)
+    # Minimum age before a hot listing is polled again.
+    hot_poll_interval_seconds: float = Field(default=60, ge=10)
+    # What counts as hot besides watched/high-priority/Early Access listings.
+    hot_recent_change_hours: float = Field(default=6, ge=0)
+    hot_restock_eta_days: int = Field(default=3, ge=0)
+    # A listing missing from complete crawls for this long is marked delisted.
+    delist_grace_minutes: float = Field(default=45, ge=5)
+    # Events older than this when dispatched (e.g. after downtime) are recorded, not announced.
+    event_max_age_minutes: float = Field(default=60, ge=1)
 
 
 class Settings:
@@ -113,6 +144,7 @@ class Settings:
         self.discord = DiscordSettings(_env_file=env_file)  # type: ignore[call-arg]
         self.http = HttpSettings(_env_file=env_file)  # type: ignore[call-arg]
         self.unifi = UnifiSettings(_env_file=env_file)  # type: ignore[call-arg]
+        self.monitor = MonitorSettings(_env_file=env_file)  # type: ignore[call-arg]
 
 
 @lru_cache(maxsize=1)

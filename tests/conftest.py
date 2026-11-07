@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tracker.db.models import Base
 from tracker.db.session import create_engine, create_sessionmaker
@@ -29,13 +29,20 @@ def database_url(tmp_path: Path) -> str:
 
 
 @pytest.fixture
-async def session(database_url: str) -> AsyncIterator[AsyncSession]:
+async def sessions(database_url: str) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
     engine = create_engine(database_url)
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
-    async with create_sessionmaker(engine)() as db_session:
-        yield db_session
+    yield create_sessionmaker(engine)
     await engine.dispose()
+
+
+@pytest.fixture
+async def session(
+    sessions: async_sessionmaker[AsyncSession],
+) -> AsyncIterator[AsyncSession]:
+    async with sessions() as db_session:
+        yield db_session
 
 
 def make_snapshot(**overrides: object) -> ListingSnapshot:

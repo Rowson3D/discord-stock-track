@@ -105,6 +105,8 @@ class Listing(Base):
     last_checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     last_changed_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     last_in_stock_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    # Set when the listing vanished from the store; cleared when it's seen again.
+    delisted_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     consecutive_unknowns: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
