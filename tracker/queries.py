@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tracker.db.models import (
@@ -109,7 +109,11 @@ async def unifi_listings_for_slug(
 
 
 async def add_watches(
-    session: AsyncSession, user_id: str, listing_ids: list[int], max_price_cents: int | None
+    session: AsyncSession,
+    user_id: str,
+    listing_ids: list[int],
+    max_price_cents: int | None,
+    guild_id: str | None = None,
 ) -> int:
     """Create or update watches. Returns how many were newly created."""
     existing = {
@@ -122,10 +126,15 @@ async def add_watches(
     for listing_id in listing_ids:
         if listing_id in existing:
             existing[listing_id].max_price_cents = max_price_cents
+            if guild_id is not None:
+                existing[listing_id].guild_id = guild_id
         else:
             session.add(
                 Watch(
-                    discord_user_id=user_id, listing_id=listing_id, max_price_cents=max_price_cents
+                    discord_user_id=user_id,
+                    listing_id=listing_id,
+                    max_price_cents=max_price_cents,
+                    guild_id=guild_id,
                 )
             )
             created += 1
@@ -140,11 +149,13 @@ async def remove_watches(session: AsyncSession, user_id: str, listing_ids: list[
     return result.rowcount or 0
 
 
-async def toggle_watch(session: AsyncSession, user_id: str, listing_id: int) -> bool:
+async def toggle_watch(
+    session: AsyncSession, user_id: str, listing_id: int, guild_id: str | None = None
+) -> bool:
     """Returns True if the user is now watching."""
     if await remove_watches(session, user_id, [listing_id]):
         return False
-    await add_watches(session, user_id, [listing_id], None)
+    await add_watches(session, user_id, [listing_id], None, guild_id)
     return True
 
 
@@ -160,13 +171,16 @@ async def user_watches(session: AsyncSession, user_id: str) -> list[ListingRow]:
     return [ListingRow(*row) for row in (await session.execute(stmt)).all()]
 
 
-async def set_subscribed(session: AsyncSession, user_id: str, subscribed: bool) -> bool:
-    """Global 'ping me for every important alert'. Returns True if anything changed."""
+async def set_subscribed(
+    session: AsyncSession, user_id: str, subscribed: bool, guild_id: str | None = None
+) -> bool:
+    """'Ping me for every important alert' in one server. Returns True if anything changed."""
+    condition = Watch.guild_id.is_(None) if guild_id is None else Watch.guild_id == guild_id
     existing = await session.scalar(
-        select(Watch).where(Watch.discord_user_id == user_id, Watch.listing_id.is_(None))
+        select(Watch).where(Watch.discord_user_id == user_id, Watch.listing_id.is_(None), condition)
     )
     if subscribed and existing is None:
-        session.add(Watch(discord_user_id=user_id, listing_id=None))
+        session.add(Watch(discord_user_id=user_id, listing_id=None, guild_id=guild_id))
         return True
     if not subscribed and existing is not None:
         await session.delete(existing)
@@ -291,3 +305,12 @@ async def variant_comps(
         .limit(limit)
     )
     return list(await session.scalars(stmt))
+
+
+async def forget_user(session: AsyncSession, user_id: str) -> dict[str, int]:
+    """Delete a member's data: watches and subscriptions in every server; unlink their comps."""
+    watches = await session.execute(delete(Watch).where(Watch.discord_user_id == user_id))
+    comps = await session.execute(
+        update(MarketComp).where(MarketComp.created_by == user_id).values(created_by=None)
+    )
+    return {"watches": watches.rowcount or 0, "comps_unlinked": comps.rowcount or 0}

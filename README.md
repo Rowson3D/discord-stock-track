@@ -70,45 +70,75 @@ full-catalog tracking; use `/priority` to poll key SKUs faster).
 
 ## Discord Setup
 
-1. Create an application and bot at https://discord.com/developers/applications and copy the token.
-   No privileged intents are needed.
-2. Invite it with the `bot` and `applications.commands` scopes, and these permissions:
+1. Create an application and bot at https://discord.com/developers/applications and copy the
+   token. No privileged intents are needed.
+2. **Security: turn off "Public Bot"** (Bot tab), so only you can add it to servers.
+3. Invite it with the `bot` and `applications.commands` scopes, and these permissions:
    View Channels, Send Messages, Embed Links, Read Message History.
-3. With Developer Mode on, copy the alert channel ID (and optionally a radar channel and your
-   server ID).
+4. With Developer Mode on, copy your server ID and alert channel ID.
 
 ```dotenv
 DISCORD_BOT_TOKEN=...
-DISCORD_CHANNEL_ID=...          # important alerts with pings
-DISCORD_RADAR_CHANNEL_ID=...    # optional: routine radar (defaults to the alert channel)
-DISCORD_GUILD_ID=...            # optional: instant slash-command sync
-DISCORD_ALERT_MENTION=<@&role>  # optional: extra mention on important alerts
+DISCORD_GUILD_ID=...            # your home server: pre-approved, valuations on
+DISCORD_CHANNEL_ID=...          # home server's alert channel (seeds its settings)
+DISCORD_OWNER_IDS=...           # optional: your user ID(s); default = the app's owner
+DISCORD_ALLOWED_GUILD_IDS=...   # optional: more servers to pre-approve
 ```
 
 Without a token, the tracker runs headless and writes events to the log.
 
+### Multiple Servers
+
+One bot serves every server it's in. Each server has its own alert channel, radar channel,
+mention role, admin role, ping rules, cooldown, and digest size (`/server configure`).
+
+- **Allowlist.** When the bot is added to a server that isn't pre-approved, it DMs you
+  **Approve** and **Block** buttons. It does nothing there until approved, and leaves after
+  `DISCORD_APPROVAL_GRACE_MINUTES` (default 10). `/server list`, `/server approve`, and
+  `/server block` manage this later.
+- **Roles.**
+  - **Owner** (you): everything, everywhere.
+  - **Server admin** (Manage Server, the server's configured admin role, or
+    `DISCORD_ADMIN_USER_IDS`): that server's settings, `/check`, `/testalert`, `/cleanup`,
+    `/status`.
+  - **Member:** watch and view.
+- **Pings stay local.** A watch or subscription pings only in the server where it was set.
+  (Watches from before multi-server support belong to the home server.)
+- **Resale valuations** (profit numbers, deal alerts) are hidden in every server except your
+  home server until you run `/server valuations enabled:True`. eBay's license treats showing
+  them to other people as displaying eBay content, so keep them to servers that are just you.
+- **Audit log.** Every admin action (approvals, setting changes, comps, checks, cleanup) is
+  recorded in a log the database itself makes append-only. View it with `/server audit`:
+  server admins see their own server's entries, and you see all of them.
+- **Privacy.** `/about` explains what's stored; `/forgetme confirm:True` deletes a member's
+  watches and subscriptions everywhere.
+
 ## Commands
 
-| Command | What it does |
-|---|---|
-| `/watch product [region] [max_price]` | Get pinged for back in stock, Early Access, and price drops. `product` autocompletes SKUs and names, or accepts a store URL (UniFi, Amazon, Best Buy, B&H, Newegg). |
-| `/unwatch product` | Stop watching. |
-| `/watches` | Your watches with live status and price. |
-| `/subscribe` / `/unsubscribe` | Get pinged for every important alert. |
-| `/stock product` | Status, price, ETA, last in stock, and recent history across regions. |
-| `/radar [kind] [limit]` | Recent radar events. |
-| `/restocks [days]` | Sold-out items with an announced restock date. |
-| `/status` | Health: catalog counts per region, last checks, scheduler jobs, events. |
-| `/opportunities [min_profit] [available] [category]` | Resale opportunities ranked by estimated profit. |
-| `/value product [refresh]` | Valuation: buy → resell → net, fee breakdown, sold/active stats, recent comps. |
-| `/comp product price [shipping] [condition] [quantity] [url] [note]` | *Admin.* Record a sold comp (e.g. your own sale). |
-| `/check product` | *Admin.* Check a product right now. |
-| `/priority product level` | *Admin.* `high` / `normal` / `low` polling priority. |
-| `/testalert [kind] [delay]` | *Admin.* Post a sample alert here (use a delay to test phone push). |
-| `/cleanup` | *Admin.* Delete the bot's old messages now. |
+| Command | Who | What it does |
+|---|---|---|
+| `/watch product [region] [max_price]` | Member | Get pinged for back in stock, Early Access, and price drops. Accepts SKUs, names, or store URLs. |
+| `/unwatch product`, `/watches` | Member | Stop watching; list your watches. |
+| `/subscribe`, `/unsubscribe` | Member | Pings for every important alert in this server. |
+| `/stock product`, `/radar`, `/restocks` | Member | Status and history, radar events, upcoming restocks. |
+| `/opportunities`, `/value product` | Member* | Resale rankings and valuations (*only where valuations are enabled). |
+| `/about`, `/forgetme` | Member | What's stored; delete your data. |
+| `/status`, `/check product`, `/testalert`, `/cleanup` | Server admin | Health, check now, sample alert, delete old bot messages. |
+| `/server settings`, `/server configure`, `/server audit` | Server admin | This server's settings and audit log. |
+| `/server list`, `/server approve`, `/server block`, `/server valuations` | Owner | Server allowlist and valuation display. |
+| `/comp`, `/priority`, `/value … refresh:True` | Owner | Manual comps, polling priority, fresh eBay data. |
 
-Alert messages include **Open** and **Watch** buttons; the Watch button works for anyone and
-survives restarts. Admin means Manage Server permission or a user ID in `DISCORD_ADMIN_USER_IDS`.
+Alert messages include **Open** and **Watch** buttons. Both work for anyone in an approved
+server and survive restarts.
+
+### Security Notes
+
+- Secrets live only in the server's `.env`. Log output masks them (and anything shaped like a
+  token or password), including inside error tracebacks.
+- The container runs non-root with a read-only filesystem, no Linux capabilities,
+  `no-new-privileges`, and memory and process limits; only `/data` is writable.
+- CI scans for leaked secrets (gitleaks) and vulnerable dependencies (pip-audit). Locally,
+  `uvx pre-commit install` blocks commits containing secrets.
 
 ## Resale Data (eBay)
 

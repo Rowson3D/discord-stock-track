@@ -15,6 +15,7 @@ from tracker.bot.embeds import alert_content, alert_embed, digest_embed
 from tracker.bot.sink import DiscordSink
 from tracker.db.models import Listing, Watch
 from tracker.domain import EventKind, StockStatus
+from tracker.guilds import GuildConfig
 from tracker.ingest import Ingestor
 from tracker.outbox import RadarEvent, load_events
 from tracker.settings import DiscordSettings, SmsSettings
@@ -52,8 +53,10 @@ async def _watch(sessions, user: str, *, global_: bool = False, max_price: int |
 
 async def _plan(sessions, settings: DiscordSettings | None = None):
     async with sessions() as session:
-        return await AlertRouter(settings or discord_settings()).plan(
-            session, await _pending(sessions)
+        return await AlertRouter().plan(
+            session,
+            await _pending(sessions),
+            GuildConfig.from_settings(settings or discord_settings()),
         )
 
 
@@ -158,7 +161,7 @@ async def test_sink_posts_alerts_with_buttons_and_mentions(sessions):
     await _history(sessions, {}, {"status": StockStatus.OUT_OF_STOCK}, {})
     await _watch(sessions, "1")
     client = FakeClient()
-    sink = DiscordSink(client, sessions, AlertRouter(discord_settings()), discord_settings())
+    sink = DiscordSink(client, sessions, AlertRouter(), discord_settings())
     await sink.publish(await _pending(sessions))
 
     [routine] = client.channels[RADAR].sent
@@ -186,9 +189,7 @@ async def test_sink_digests_many_routine_events(sessions):
         )
     client = FakeClient()
     settings = discord_settings(digest_threshold=5)
-    await DiscordSink(client, sessions, AlertRouter(settings), settings).publish(
-        await _pending(sessions)
-    )
+    await DiscordSink(client, sessions, AlertRouter(), settings).publish(await _pending(sessions))
     [digest] = client.channels[RADAR].sent
     assert digest["embed"].title == "📡 Radar digest · 8 updates"
     assert digest["embed"].description.count("\n") == 7
@@ -198,9 +199,7 @@ async def test_sink_skips_missing_channel(sessions):
     await _history(sessions, {}, {"status": StockStatus.OUT_OF_STOCK})
     client = FakeClient()
     settings = discord_settings(radar_channel_id=333)
-    await DiscordSink(client, sessions, AlertRouter(settings), settings).publish(
-        await _pending(sessions)
-    )
+    await DiscordSink(client, sessions, AlertRouter(), settings).publish(await _pending(sessions))
     assert all(not channel.sent for channel in client.channels.values())
 
 
@@ -263,9 +262,7 @@ async def test_sms_sink_sends_only_important_kinds(sessions):
         to_numbers="+15551111111,+15552222222",
     )
     assert settings.configured
-    sink = SmsSink(
-        settings, sessions, AlertRouter(discord_settings()), transport=httpx.MockTransport(handler)
-    )
+    sink = SmsSink(settings, sessions, AlertRouter(), transport=httpx.MockTransport(handler))
     await sink.publish(await _pending(sessions))
 
     assert len(requests) == 2  # back_in_stock to two numbers; sold_out is not SMS-worthy

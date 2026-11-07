@@ -352,6 +352,7 @@ async def test_helpers(catalog):
 async def test_deal_and_back_in_stock_alerts_carry_profit(catalog):
     from tracker.alerts import AlertRouter
     from tracker.bot.embeds import alert_content, alert_embed
+    from tracker.guilds import GuildConfig
     from tracker.outbox import load_events
     from tracker.settings import DiscordSettings
 
@@ -370,7 +371,7 @@ async def test_deal_and_back_in_stock_alerts_carry_profit(catalog):
 
     settings = DiscordSettings(_env_file=None, channel_id=1)  # type: ignore[call-arg]
     async with catalog() as session:
-        [plan] = await AlertRouter(settings).plan(session, [deal])
+        [plan] = await AlertRouter().plan(session, [deal], GuildConfig.from_settings(settings))
     assert plan.important
     assert plan.channel_id == 1
     assert "est." in alert_content(plan)

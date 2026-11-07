@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tracker.alerts import AlertRouter
 from tracker.domain import format_cents
+from tracker.guilds import GuildConfig
 from tracker.outbox import RadarEvent
 from tracker.settings import SmsSettings
 
@@ -39,19 +40,28 @@ class SmsSink:
         sessions: async_sessionmaker[AsyncSession],
         router: AlertRouter,
         transport: httpx.AsyncBaseTransport | None = None,
+        *,
+        cooldown_minutes: float = 10.0,
     ) -> None:
         self._settings = settings
         self._sessions = sessions
         self._router = router
         self._transport = transport
         self._kinds = set(settings.kinds)
+        # SMS is the owner's private channel: one global destination, valuations included.
+        self._destination = GuildConfig(
+            guild_id="global",
+            mention_kinds=frozenset(settings.kinds),
+            cooldown_minutes=cooldown_minutes,
+            show_valuations=True,
+        )
 
     async def publish(self, events: Sequence[RadarEvent]) -> None:
         candidates = [e for e in events if e.kind.value in self._kinds]
         if not candidates:
             return
         async with self._sessions() as session:
-            plans = await self._router.plan(session, candidates)
+            plans = await self._router.plan(session, candidates, self._destination)
         messages = [sms_body(p.event) for p in plans if not p.suppressed]
         if not messages:
             return

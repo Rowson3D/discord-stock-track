@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 
 from sqlalchemy import (
+    DDL,
     Boolean,
     Date,
     Float,
@@ -20,6 +21,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -254,6 +256,48 @@ class Meta(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
 
 
+class Guild(Base):
+    """A Discord server the bot may serve, with its own alert configuration.
+
+    Only `approved` servers get alerts or accept commands; the bot leaves the rest.
+    """
+
+    __tablename__ = "guilds"
+
+    guild_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    name: Mapped[str | None] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|approved|blocked
+    decided_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    decided_by: Mapped[str | None] = mapped_column(String(32))
+    alert_channel_id: Mapped[str | None] = mapped_column(String(32))
+    radar_channel_id: Mapped[str | None] = mapped_column(String(32))
+    alert_mention: Mapped[str | None] = mapped_column(String(100))
+    admin_role_id: Mapped[str | None] = mapped_column(String(32))
+    mention_kinds: Mapped[str | None] = mapped_column(String(300))  # CSV; NULL = defaults
+    cooldown_minutes: Mapped[float | None] = mapped_column(Float)
+    digest_threshold: Mapped[int | None] = mapped_column(Integer)
+    # eBay-derived numbers (resale, profit, deals). Off by default: showing them to other
+    # people is "displaying eBay content" under eBay's license.
+    show_valuations: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
+
+
+class AuditLog(Base):
+    """Append-only record of administrative actions (enforced by database triggers)."""
+
+    __tablename__ = "audit_log"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, index=True)
+    actor_id: Mapped[str | None] = mapped_column(String(32))  # NULL = the system itself
+    actor_name: Mapped[str | None] = mapped_column(String(100))
+    guild_id: Mapped[str | None] = mapped_column(String(32), index=True)
+    action: Mapped[str] = mapped_column(String(64))
+    target: Mapped[str | None] = mapped_column(String(200))
+    details: Mapped[str | None] = mapped_column(Text)  # JSON
+
+
 class Watch(Base):
     """A Discord user wants alerts for a listing (or for everything when listing_id is NULL)."""
 
@@ -267,4 +311,17 @@ class Watch(Base):
     )
     # Only ping when the listing's price is at or below this.
     max_price_cents: Mapped[int | None] = mapped_column(Integer)
+    # The server the watch was set in; pings go there. NULL (pre-Phase 4) = the home server.
+    guild_id: Mapped[str | None] = mapped_column(String(32), index=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+# The audit log is append-only at the database level, not just by convention.
+AUDIT_APPEND_ONLY_DDL = (
+    "CREATE TRIGGER IF NOT EXISTS audit_log_no_update BEFORE UPDATE ON audit_log "
+    "BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END",
+    "CREATE TRIGGER IF NOT EXISTS audit_log_no_delete BEFORE DELETE ON audit_log "
+    "BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END",
+)
+for _statement in AUDIT_APPEND_ONLY_DDL:
+    event.listen(AuditLog.__table__, "after_create", DDL(_statement).execute_if(dialect="sqlite"))

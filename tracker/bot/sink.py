@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tracker.alerts import AlertPlan, AlertRouter
 from tracker.bot.embeds import alert_content, alert_embed, digest_embed
 from tracker.bot.views import alert_view
+from tracker.guilds import GuildConfig, approved_configs, home_guild_id
 from tracker.outbox import RadarEvent
 from tracker.settings import DiscordSettings
 
@@ -54,19 +55,40 @@ class DiscordSink:
         self._settings = settings
         self._ready_timeout = ready_timeout
 
+    async def _destinations(self, session: AsyncSession) -> tuple[list[GuildConfig], str | None]:
+        configs = await approved_configs(session, self._settings)
+        home = await home_guild_id(session, self._settings)
+        if not configs and self._settings.channel_id:
+            # Single-server install whose server isn't recorded yet (resolved on connect).
+            configs = [GuildConfig.from_settings(self._settings, guild_id=home or "global")]
+        return [c for c in configs if c.alert_channel_id or c.radar_channel_id], home
+
     async def publish(self, events: Sequence[RadarEvent]) -> None:
         async with self._sessions() as session:
-            plans = await self._router.plan(session, events)
-        for plan in plans:
-            if plan.suppressed:
-                logger.info("Suppressed %s (%s)", plan.event.summary(), plan.suppressed)
-        active = [p for p in plans if not p.suppressed and p.channel_id]
-        if not active:
+            destinations, home = await self._destinations(session)
+            planned: list[tuple[GuildConfig, list[AlertPlan]]] = []
+            for guild in destinations:
+                plans = await self._router.plan(session, events, guild, home_guild_id=home)
+                for plan in plans:
+                    if plan.suppressed:
+                        logger.info(
+                            "[%s] suppressed %s (%s)",
+                            guild.name or guild.guild_id,
+                            plan.event.summary(),
+                            plan.suppressed,
+                        )
+                active = [p for p in plans if not p.suppressed and p.channel_id]
+                if active:
+                    planned.append((guild, active))
+        if not planned:
             return
 
         # Raising here leaves the events pending; the dispatcher retries later.
         await asyncio.wait_for(self._client.wait_until_ready(), timeout=self._ready_timeout)
+        for guild, active in planned:
+            await self._deliver(guild, active)
 
+    async def _deliver(self, guild: GuildConfig, active: list[AlertPlan]) -> None:
         by_channel: dict[int, list[AlertPlan]] = {}
         for plan in active:
             assert plan.channel_id is not None
@@ -76,9 +98,20 @@ class DiscordSink:
             channel = await self._channel(channel_id)
             if channel is None:
                 continue
+            guild_of_channel = getattr(getattr(channel, "guild", None), "id", None)
+            if (
+                guild_of_channel is not None
+                and str(guild_of_channel) != guild.guild_id
+                and (guild.guild_id != "global")
+            ):
+                # A server admin pointed alerts at another server's channel: refuse.
+                logger.error(
+                    "Channel %s isn't in server %s; not posting there", channel_id, guild.guild_id
+                )
+                continue
             individual = [p for p in channel_plans if p.important or p.pings]
             routine = [p for p in channel_plans if not (p.important or p.pings)]
-            if len(routine) > self._settings.digest_threshold:
+            if len(routine) > guild.digest_threshold:
                 for start in range(0, len(routine), DIGEST_PAGE):
                     page = [p.event for p in routine[start : start + DIGEST_PAGE]]
                     await self._send(channel, embed=digest_embed(page, limit=DIGEST_PAGE))

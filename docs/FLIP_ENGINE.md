@@ -269,3 +269,37 @@ is served openly.
   certificate. The ledger's CSV export is for this.
 - **Capital risk:** predictions are probabilistic. Enforce budgets and stop-losses in code,
   not in your head.
+
+---
+
+## Progress log
+
+**2026-11-07: Phase 4 (multi-server core and security) done**
+- `guilds` table: allowlist (pending, approved, or blocked) and per-server settings (alert and
+  radar channels, mention role, admin role, ping kinds, cooldown, digest size, valuation
+  visibility).
+- Startup pre-approves `DISCORD_GUILD_ID` and `DISCORD_ALLOWED_GUILD_IDS` and seeds the home
+  server from `.env`. Single-server installs are adopted automatically from
+  `DISCORD_CHANNEL_ID`.
+- An unknown server gets an Approve or Block DM to the owner(s), and the bot auto-leaves after
+  the grace period. Commands sync per approved server; stale global commands are cleared.
+- Roles: owner (config IDs or the app owner/team), server admin, and member. One
+  `interaction_check` gates every command; a command not in the table is owner-only by default.
+- Watches and subscriptions record their server; pings stay in that server. Legacy watches
+  belong to the home server.
+- Valuations are hidden per server (stripped from alerts, deal alerts suppressed,
+  `/opportunities` and `/value` refused) unless the owner enables them.
+- The alert sink refuses to post to a channel belonging to a different server.
+- `audit_log` is append-only, enforced by SQLite triggers in both the models and migration
+  0007. It records approvals, configuration changes, comps, checks, priorities, test alerts,
+  cleanups, and forgets.
+- `/forgetme` (deletes watches and subscriptions, unlinks comps) and `/about` (privacy note).
+- Log redaction of configured secrets and token-shaped strings, including tracebacks.
+- Hardened container (read-only, no capabilities, `no-new-privileges`, limits, healthcheck),
+  pre-commit (gitleaks, ruff), and CI security job (gitleaks, pip-audit; currently no known
+  vulnerabilities).
+- 226 tests. Verified live: migration, bootstrap, and the append-only audit log rejecting a
+  `DELETE`.
+
+**Not verified:** a live Discord session (approval DMs, per-server command sync). It needs a
+bot token on the test machine.

@@ -255,7 +255,7 @@ async def test_slash_commands_register_and_serialize():
     assert set(payloads) == {
         "watch", "unwatch", "watches", "subscribe", "unsubscribe", "stock", "radar",
         "restocks", "status", "check", "priority", "testalert", "cleanup",
-        "opportunities", "value", "comp",
+        "opportunities", "value", "comp", "forgetme", "about", "server",
     }  # fmt: skip
     for payload in payloads.values():
         assert 1 <= len(payload["description"]) <= 100

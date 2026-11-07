@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tracker.alerts import AlertRouter
 from tracker.db.migrate import upgrade_async
 from tracker.db.session import create_engine, create_sessionmaker
+from tracker.guilds import bootstrap as bootstrap_guilds
 from tracker.http import HttpClient
 from tracker.legacy import import_legacy
 from tracker.market.ebay import EbayClient
@@ -166,9 +167,20 @@ async def run_tracker(
             add_market_jobs(scheduler, market, settings)
             await auto_import_legacy(settings, sessions, store)
 
-            router = AlertRouter(settings.discord)
+            router = AlertRouter()
+            async with sessions() as session, session.begin():
+                approved = await bootstrap_guilds(session, settings.discord)
+            if approved:
+                logger.info("Pre-approved Discord server(s): %s", ", ".join(approved))
             if settings.sms.configured:
-                sink_list.append(SmsSink(settings.sms, sessions, router))
+                sink_list.append(
+                    SmsSink(
+                        settings.sms,
+                        sessions,
+                        router,
+                        cooldown_minutes=settings.discord.alert_cooldown_minutes,
+                    )
+                )
                 logger.info("SMS alerts enabled for %d number(s)", len(settings.sms.to_numbers))
 
             bot = None

@@ -94,7 +94,23 @@ class DiscordSettings(BaseSettings):
     # More routine events than this in one batch are combined into a digest embed.
     digest_threshold: int = Field(default=5, ge=1)
 
-    _split = field_validator("admin_user_ids", "mention_kinds", mode="before")(_split_commas)
+    # Owner(s): global control. Empty = the Discord application's owner (or team members).
+    owner_ids: CommaList = Field(default_factory=list)
+    # Servers approved without asking (DISCORD_GUILD_ID is always included).
+    allowed_guild_ids: CommaList = Field(default_factory=list)
+    # A newly joined, unapproved server is left after this long without owner approval.
+    approval_grace_minutes: float = Field(default=10, ge=1)
+
+    _split = field_validator(
+        "admin_user_ids", "mention_kinds", "owner_ids", "allowed_guild_ids", mode="before"
+    )(_split_commas)
+
+    @property
+    def preapproved_guilds(self) -> list[str]:
+        ids = list(self.allowed_guild_ids)
+        if self.guild_id:
+            ids.insert(0, str(self.guild_id))
+        return list(dict.fromkeys(ids))
 
     @field_validator("channel_id", "radar_channel_id", "guild_id", mode="before")
     @classmethod
@@ -295,6 +311,15 @@ class Settings:
         self.cleanup = CleanupSettings(_env_file=env_file)  # type: ignore[call-arg]
         self.ebay = EbaySettings(_env_file=env_file)  # type: ignore[call-arg]
         self.market = MarketSettings(_env_file=env_file)  # type: ignore[call-arg]
+
+    def secret_values(self) -> list[str]:
+        """Every configured secret, so logging can mask it wherever it appears."""
+        candidates = (
+            self.discord.bot_token,
+            self.ebay.client_secret,
+            self.sms.auth_token,
+        )
+        return [c.get_secret_value() for c in candidates if c and c.get_secret_value()]
 
 
 @lru_cache(maxsize=1)

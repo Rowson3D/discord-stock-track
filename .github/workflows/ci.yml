@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -26,3 +29,22 @@ jobs:
 
       - name: Test
         run: uv run pytest -q
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # scan the full history for leaked secrets
+
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Dependency vulnerability audit (pip-audit)
+        run: |
+          uv export --format requirements-txt --no-dev --no-hashes --no-emit-project > requirements-audit.txt
+          uvx pip-audit --strict -r requirements-audit.txt

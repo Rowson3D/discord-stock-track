@@ -14,18 +14,29 @@ from discord import app_commands
 from discord.ext import commands
 
 from tracker.alerts import AlertPlan
+from tracker.audit import audit, describe, recent_audit
 from tracker.bot.cleanup import cleanup_messages
 from tracker.bot.embeds import KIND_STYLE, alert_content, alert_embed, source_name, status_text
 from tracker.bot.views import alert_view
 from tracker.db.models import MarketComp, Product, Valuation, Variant
 from tracker.domain import EventKind, Priority, SourceKey, StockStatus, format_cents
+from tracker.guilds import (
+    ADMIN_FIELDS,
+    GuildConfig,
+    GuildStatus,
+    config_for,
+    list_guilds,
+    update_config,
+)
 from tracker.market.ebay import EbayItem
 from tracker.market.matching import MatchResult
 from tracker.outbox import RadarEvent, load_events
+from tracker.permissions import Role, check_access, resolve_role
 from tracker.queries import (
     ListingRow,
     OpportunityRow,
     add_watches,
+    forget_user,
     listings_for_url,
     opportunities,
     recent_observations,
@@ -190,19 +201,57 @@ class TrackerCommands(commands.Cog):
 
     # ── helpers ───────────────────────────────────────────────────────────
 
-    def _is_admin(self, interaction: discord.Interaction[Any]) -> bool:
-        if str(interaction.user.id) in self.ctx.settings.discord.admin_user_ids:
-            return True
+    async def interaction_check(self, interaction: discord.Interaction[Any]) -> bool:
+        """Gate every slash command: approved server + the command's minimum role."""
+        name = interaction.command.qualified_name if interaction.command else "?"
+        guild_config: GuildConfig | None = None
+        if interaction.guild_id is not None:
+            async with self.ctx.sessions() as session:
+                guild_config = await config_for(
+                    session, self.ctx.settings.discord, interaction.guild_id
+                )
         permissions = getattr(interaction.user, "guild_permissions", None)
-        return bool(permissions and permissions.manage_guild)
-
-    async def _require_admin(self, interaction: discord.Interaction[Any]) -> bool:
-        if self._is_admin(interaction):
-            return True
-        await interaction.response.send_message(
-            "⛔ Admins only (Manage Server permission or DISCORD_ADMIN_USER_IDS).", ephemeral=True
+        role = resolve_role(
+            interaction.user.id,
+            owner_ids=self.bot.owner_ids,
+            global_admin_ids=self.ctx.settings.discord.admin_user_ids,
+            manage_guild=bool(permissions and permissions.manage_guild),
+            role_ids=[r.id for r in getattr(interaction.user, "roles", [])],
+            guild=guild_config,
         )
-        return False
+        reason = check_access(name, role, guild_config)
+        if reason is not None:
+            await interaction.response.send_message(f"⛔ {reason}", ephemeral=True)
+            return False
+        interaction.extras["role"] = role
+        interaction.extras["guild_config"] = guild_config
+        return True
+
+    @staticmethod
+    def _role(interaction: discord.Interaction[Any]) -> Role:
+        return interaction.extras.get("role", Role.MEMBER)
+
+    @staticmethod
+    def _guild(interaction: discord.Interaction[Any]) -> GuildConfig:
+        return interaction.extras["guild_config"]
+
+    async def _audit(
+        self,
+        interaction: discord.Interaction[Any],
+        action: str,
+        target: str | None = None,
+        **details: Any,
+    ) -> None:
+        async with self.ctx.sessions() as session, session.begin():
+            await audit(
+                session,
+                action,
+                actor_id=interaction.user.id,
+                actor_name=str(interaction.user),
+                guild_id=interaction.guild_id,
+                target=target,
+                details=details or None,
+            )
 
     async def _resolve(self, text: str, region: str | None) -> tuple[list[ListingRow], str | None]:
         """A SKU, product name, or store URL → listings (fetching unknown URLs on demand)."""
@@ -287,7 +336,11 @@ class TrackerCommands(commands.Cog):
         cap = parse_money(max_price) if max_price is not None else None
         async with self.ctx.sessions() as session, session.begin():
             created = await add_watches(
-                session, str(interaction.user.id), [r.listing.id for r in rows], cap
+                session,
+                str(interaction.user.id),
+                [r.listing.id for r in rows],
+                cap,
+                str(interaction.guild_id),
             )
         verb = "Watching" if created else "Updated watch for"
         cap_text = f" at or below {format_cents(cap)}" if cap else ""
@@ -336,7 +389,9 @@ class TrackerCommands(commands.Cog):
     )
     async def subscribe(self, interaction: discord.Interaction[Any]) -> None:
         async with self.ctx.sessions() as session, session.begin():
-            changed = await set_subscribed(session, str(interaction.user.id), True)
+            changed = await set_subscribed(
+                session, str(interaction.user.id), True, str(interaction.guild_id)
+            )
         await interaction.response.send_message(
             "🔔 Subscribed to all important alerts." if changed else "You're already subscribed.",
             ephemeral=True,
@@ -345,7 +400,9 @@ class TrackerCommands(commands.Cog):
     @app_commands.command(description="Stop being pinged for every important alert")
     async def unsubscribe(self, interaction: discord.Interaction[Any]) -> None:
         async with self.ctx.sessions() as session, session.begin():
-            changed = await set_subscribed(session, str(interaction.user.id), False)
+            changed = await set_subscribed(
+                session, str(interaction.user.id), False, str(interaction.guild_id)
+            )
         await interaction.response.send_message(
             "🔕 Unsubscribed." if changed else "You weren't subscribed.", ephemeral=True
         )
@@ -548,7 +605,10 @@ class TrackerCommands(commands.Cog):
     async def value(
         self, interaction: discord.Interaction[Any], product: str, refresh: bool = False
     ) -> None:
-        if refresh and not await self._require_admin(interaction):
+        if refresh and self._role(interaction) < Role.OWNER:
+            await interaction.response.send_message(
+                "⛔ Only the owner can refresh eBay data (it uses the API quota).", ephemeral=True
+            )
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         async with self.ctx.sessions() as session:
@@ -595,8 +655,6 @@ class TrackerCommands(commands.Cog):
         url: str | None = None,
         note: str | None = None,
     ) -> None:
-        if not await self._require_admin(interaction):
-            return
         async with self.ctx.sessions() as session:
             variant = await resolve_variant(session, product)
         if variant is None:
@@ -604,6 +662,7 @@ class TrackerCommands(commands.Cog):
                 f"⚠️ No product matches `{product}`.", ephemeral=True
             )
             return
+        await self._audit(interaction, "market.comp", variant.sku, price=price, quantity=quantity)
         result = await self.ctx.market.add_manual_comp(
             variant.id,
             round(price * 100),
@@ -630,9 +689,8 @@ class TrackerCommands(commands.Cog):
     @app_commands.command(description="[admin] Check a product right now")
     @app_commands.autocomplete(product=product_autocomplete)
     async def check(self, interaction: discord.Interaction[Any], product: str) -> None:
-        if not await self._require_admin(interaction):
-            return
         await interaction.response.defer(ephemeral=True, thinking=True)
+        await self._audit(interaction, "stock.check", product)
         rows, error = await self._resolve(product, None)
         if error:
             await interaction.followup.send(f"⚠️ {error}", ephemeral=True)
@@ -668,11 +726,11 @@ class TrackerCommands(commands.Cog):
     async def priority(
         self, interaction: discord.Interaction[Any], product: str, level: str
     ) -> None:
-        if not await self._require_admin(interaction):
-            return
         async with self.ctx.sessions() as session, session.begin():
             variant = await resolve_variant(session, product)
             changed = await set_priority(session, variant.id, level) if variant else 0
+        if variant:
+            await self._audit(interaction, "stock.priority", variant.sku, level=level)
         await interaction.response.send_message(
             f"✅ `{variant.sku}` priority → **{level}** on {changed} listing(s)."
             if variant
@@ -696,10 +754,9 @@ class TrackerCommands(commands.Cog):
         kind: str = EventKind.BACK_IN_STOCK.value,
         delay: app_commands.Range[int, 0, 60] = 0,
     ) -> None:
-        if not await self._require_admin(interaction):
-            return
         if interaction.channel is None:
             return
+        await self._audit(interaction, "alert.test", kind)
         await interaction.response.send_message(
             f"🧪 Sending a sample `{kind}` alert in {delay}s.", ephemeral=True
         )
@@ -738,15 +795,221 @@ class TrackerCommands(commands.Cog):
 
     @app_commands.command(description="[admin] Delete this bot's old messages now")
     async def cleanup(self, interaction: discord.Interaction[Any]) -> None:
-        if not await self._require_admin(interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        guild = self._guild(interaction)
+        channels = [c for c in (guild.alert_channel_id, guild.radar_channel_id) if c]
+        deleted = await cleanup_messages(
+            self.bot, channels, self.ctx.settings.cleanup, datetime.now(UTC)
+        )
+        await self._audit(interaction, "messages.cleanup", deleted=deleted)
+        await interaction.followup.send(f"🧹 Deleted {deleted} old message(s).", ephemeral=True)
+
+    # ── members: privacy ──────────────────────────────────────────────────
+
+    @app_commands.command(description="Delete everything the tracker stores about you")
+    @app_commands.describe(confirm="Set to True to permanently delete your watches and settings")
+    async def forgetme(self, interaction: discord.Interaction[Any], confirm: bool = False) -> None:
+        if not confirm:
+            await interaction.response.send_message(
+                "This deletes all your watches and subscriptions in every server. "
+                "Run `/forgetme confirm:True` to proceed.",
+                ephemeral=True,
+            )
+            return
+        async with self.ctx.sessions() as session, session.begin():
+            counts = await forget_user(session, str(interaction.user.id))
+            # Logged without the member's identity: the point is to forget them.
+            await audit(session, "member.forget", guild_id=interaction.guild_id, details=counts)
+        await interaction.response.send_message(
+            f"🗑️ Done: removed {counts['watches']} watch(es) and subscription(s).", ephemeral=True
+        )
+
+    @app_commands.command(description="What this bot does and what it stores about you")
+    async def about(self, interaction: discord.Interaction[Any]) -> None:
+        embed = discord.Embed(
+            title="About this tracker",
+            color=0x5865F2,
+            description=(
+                "A private stock and price tracker run by this server's owner.\n\n"
+                "**What it stores about you:** your Discord user ID, the products you watch "
+                "(with any max price), and subscriptions. Nothing else; it can't read messages.\n"
+                "**Delete it:** `/forgetme confirm:True` removes it all, in every server.\n"
+                "**Who sees it:** only the bot's operator."
+            ),
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # ── servers ───────────────────────────────────────────────────────────
+
+    server = app_commands.Group(name="server", description="This server's tracker settings")
+
+    @server.command(name="settings", description="Show this server's alert settings")
+    async def server_settings(self, interaction: discord.Interaction[Any]) -> None:
+        g = self._guild(interaction)
+
+        def channel(cid: int | None) -> str:
+            return f"<#{cid}>" if cid else "—"
+
+        embed = discord.Embed(title=f"⚙️ {interaction.guild.name if interaction.guild else ''}")
+        embed.add_field(name="Alerts channel", value=channel(g.alert_channel_id))
+        embed.add_field(
+            name="Radar channel",
+            value=channel(g.radar_channel_id) + ("" if g.radar_channel_id else " (uses alerts)"),
+        )
+        embed.add_field(name="Mention", value=g.alert_mention or "—")
+        embed.add_field(
+            name="Admin role", value=f"<@&{g.admin_role_id}>" if g.admin_role_id else "—"
+        )
+        embed.add_field(
+            name="Pings for", value=", ".join(sorted(g.mention_kinds)) or "—", inline=False
+        )
+        embed.add_field(name="Cooldown", value=f"{g.cooldown_minutes:g} min")
+        embed.add_field(name="Digest after", value=f"{g.digest_threshold} events")
+        embed.add_field(name="Resale valuations", value="shown" if g.show_valuations else "hidden")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @server.command(name="configure", description="Change this server's alert settings")
+    @app_commands.describe(
+        alerts_channel="Where important alerts (with pings) go",
+        radar_channel="Where routine radar events go",
+        mention_role="Role to ping on important alerts",
+        admin_role="Role whose members can manage these settings",
+        ping_kinds="Comma-separated: back_in_stock, early_access, new_listing, relisted, deal",
+        cooldown_minutes="Suppress repeats of the same alert for this long",
+        digest_threshold="Combine more routine events than this into a digest",
+        clear_radar="Send radar events to the alerts channel",
+        clear_mention="Stop pinging a role",
+    )
+    async def server_configure(
+        self,
+        interaction: discord.Interaction[Any],
+        alerts_channel: discord.TextChannel | None = None,
+        radar_channel: discord.TextChannel | None = None,
+        mention_role: discord.Role | None = None,
+        admin_role: discord.Role | None = None,
+        ping_kinds: str | None = None,
+        cooldown_minutes: app_commands.Range[float, 0, 1440] | None = None,
+        digest_threshold: app_commands.Range[int, 1, 100] | None = None,
+        clear_radar: bool = False,
+        clear_mention: bool = False,
+    ) -> None:
+        changes: dict[str, Any] = {}
+        warnings: list[str] = []
+        for key, channel in (
+            ("alert_channel_id", alerts_channel),
+            ("radar_channel_id", radar_channel),
+        ):
+            if channel is None:
+                continue
+            me = channel.guild.me
+            perms = channel.permissions_for(me) if me else None
+            if perms is None or not (perms.send_messages and perms.embed_links):
+                warnings.append(f"I can't post embeds in {channel.mention}; fix its permissions.")
+            changes[key] = str(channel.id)
+        if clear_radar:
+            changes["radar_channel_id"] = None
+        if mention_role is not None:
+            changes["alert_mention"] = mention_role.mention
+        if clear_mention:
+            changes["alert_mention"] = None
+        if admin_role is not None:
+            changes["admin_role_id"] = str(admin_role.id)
+        if ping_kinds is not None:
+            kinds = [k.strip() for k in ping_kinds.split(",") if k.strip()]
+            unknown = [k for k in kinds if k not in EventKind]
+            if unknown:
+                await interaction.response.send_message(
+                    f"⚠️ Unknown kinds: {', '.join(unknown)}", ephemeral=True
+                )
+                return
+            changes["mention_kinds"] = ",".join(kinds)
+        if cooldown_minutes is not None:
+            changes["cooldown_minutes"] = float(cooldown_minutes)
+        if digest_threshold is not None:
+            changes["digest_threshold"] = int(digest_threshold)
+        if not changes:
+            await interaction.response.send_message("Nothing to change.", ephemeral=True)
+            return
+        async with self.ctx.sessions() as session, session.begin():
+            await update_config(
+                session,
+                str(interaction.guild_id),
+                changes,
+                allowed=ADMIN_FIELDS,
+                actor_id=str(interaction.user.id),
+                actor_name=str(interaction.user),
+            )
+        note = ("\n" + "\n".join(f"⚠️ {w}" for w in warnings)) if warnings else ""
+        await interaction.response.send_message(
+            f"✅ Updated: {', '.join(sorted(changes))}.{note}", ephemeral=True
+        )
+
+    @server.command(
+        name="valuations", description="[owner] Show or hide eBay-derived resale numbers here"
+    )
+    async def server_valuations(self, interaction: discord.Interaction[Any], enabled: bool) -> None:
+        async with self.ctx.sessions() as session, session.begin():
+            await update_config(
+                session,
+                str(interaction.guild_id),
+                {"show_valuations": enabled},
+                allowed=frozenset({"show_valuations"}),
+                actor_id=str(interaction.user.id),
+                actor_name=str(interaction.user),
+            )
+        note = (
+            " eBay's license treats showing these to other people as displaying eBay content; "
+            "keep it to servers that are just you."
+            if enabled
+            else ""
+        )
+        await interaction.response.send_message(
+            f"✅ Resale valuations {'shown' if enabled else 'hidden'} in this server.{note}",
+            ephemeral=True,
+        )
+
+    @server.command(name="audit", description="Recent admin actions (this server; owner sees all)")
+    async def server_audit(
+        self, interaction: discord.Interaction[Any], limit: app_commands.Range[int, 1, 25] = 15
+    ) -> None:
+        scope = None if self._role(interaction) >= Role.OWNER else str(interaction.guild_id)
+        async with self.ctx.sessions() as session:
+            entries = await recent_audit(session, limit=limit, guild_id=scope)
+        text = "\n".join(f"`{describe(e)}`"[:300] for e in entries) or "No entries."
+        embed = discord.Embed(title="🧾 Audit log", description=text[:4000], color=0x99AAB5)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @server.command(name="list", description="[owner] All servers and their approval status")
+    async def server_list(self, interaction: discord.Interaction[Any]) -> None:
+        async with self.ctx.sessions() as session:
+            rows = await list_guilds(session)
+        icon = {GuildStatus.APPROVED: "✅", GuildStatus.PENDING: "⏳", GuildStatus.BLOCKED: "⛔"}
+        lines = [
+            f"{icon.get(GuildStatus(r.status), '?')} "
+            f"**{discord.utils.escape_markdown(r.name or '?')}** "
+            f"`{r.guild_id}`{' · valuations' if r.show_valuations else ''}"
+            for r in rows
+        ]
+        embed = discord.Embed(title="Servers", description=_paginate(lines, 40), color=0x5865F2)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @server.command(name="approve", description="[owner] Approve a server by ID")
+    async def server_approve(self, interaction: discord.Interaction[Any], guild_id: str) -> None:
+        await self._decide(interaction, guild_id, GuildStatus.APPROVED)
+
+    @server.command(name="block", description="[owner] Block a server by ID (the bot leaves it)")
+    async def server_block(self, interaction: discord.Interaction[Any], guild_id: str) -> None:
+        await self._decide(interaction, guild_id, GuildStatus.BLOCKED)
+
+    async def _decide(
+        self, interaction: discord.Interaction[Any], guild_id: str, status: GuildStatus
+    ) -> None:
+        if not guild_id.isdigit():
+            await interaction.response.send_message("⚠️ Server IDs are numbers.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
-        settings = self.ctx.settings
-        channels = [
-            c for c in (settings.discord.channel_id, settings.discord.radar_channel_id) if c
-        ]
-        deleted = await cleanup_messages(self.bot, channels, settings.cleanup, datetime.now(UTC))
-        await interaction.followup.send(f"🧹 Deleted {deleted} old message(s).", ephemeral=True)
+        await self.bot.decide_guild(int(guild_id), status, interaction.user)
+        await interaction.followup.send(f"✅ Server `{guild_id}` → {status.value}.", ephemeral=True)
 
     async def cog_app_command_error(
         self, interaction: discord.Interaction[Any], error: app_commands.AppCommandError

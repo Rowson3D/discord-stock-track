@@ -375,6 +375,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "DEBUG" if args.verbose else settings.app.log_level,
         settings.app.log_file,
         settings.app.log_json,
+        secrets=settings.secret_values(),
     )
     try:
         return asyncio.run(args.handler(settings, args))

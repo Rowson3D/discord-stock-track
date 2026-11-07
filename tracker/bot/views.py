@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 import discord
 
+from tracker.guilds import config_for
 from tracker.queries import toggle_watch
 
 if TYPE_CHECKING:
@@ -44,8 +45,19 @@ class WatchButton(
 
     async def callback(self, interaction: discord.Interaction[Any]) -> None:
         bot: TrackerBot = interaction.client  # type: ignore[assignment]
+        guild_id = str(interaction.guild_id) if interaction.guild_id else None
         async with bot.ctx.sessions() as session, session.begin():
-            watching = await toggle_watch(session, str(interaction.user.id), self.listing_id)
+            config = (
+                await config_for(session, bot.ctx.settings.discord, guild_id) if guild_id else None
+            )
+            if config is None or not config.approved:
+                await interaction.response.send_message(
+                    "This server isn't approved to use the tracker.", ephemeral=True
+                )
+                return
+            watching = await toggle_watch(
+                session, str(interaction.user.id), self.listing_id, guild_id
+            )
         message = (
             "🔔 Watching. You'll be pinged when this is back in stock, goes Early Access, or "
             "drops in price."
