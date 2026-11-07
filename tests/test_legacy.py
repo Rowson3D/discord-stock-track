@@ -11,7 +11,7 @@ from tests.conftest import make_snapshot
 from tracker.db.models import Listing, Watch
 from tracker.domain import ListingSnapshot, SourceKey, StockStatus
 from tracker.http import FetchError
-from tracker.legacy import import_legacy, legacy_sku, parse_legacy_price
+from tracker.legacy import import_legacy
 
 
 class FakeUnifi:
@@ -106,27 +106,3 @@ async def test_import_without_resolver_skips_unifi(
     )
     assert report.listings_created == 1
     assert any("UniFi resolution unavailable" in item for item in report.unresolved)
-
-
-@pytest.mark.parametrize(
-    ("value", "cents"),
-    [
-        ("$189.00", 18900),
-        ("$1,299.99", 129999),
-        ("$5", 500),
-        ("$5.5", 550),
-        (None, None),
-        ("", None),
-    ],
-)
-def test_parse_legacy_price(value: str | None, cents: int | None):
-    assert parse_legacy_price(value) == cents
-
-
-def test_legacy_sku():
-    amazon = {"url": "https://www.amazon.com/Some-Thing/dp/B0ABCDEFGH/ref=x"}
-    bestbuy = {"url": "https://www.bestbuy.com/site/rtx/6521430.p?skuId=6521430"}
-    assert legacy_sku(amazon, SourceKey.AMAZON) == "AMZN-B0ABCDEFGH"
-    assert legacy_sku(bestbuy, SourceKey.BESTBUY) == "BBY-6521430"
-    assert legacy_sku({"url": "x", "sku": "RTX-4090-FE"}, SourceKey.BESTBUY) == "RTX-4090-FE"
-    assert legacy_sku({"url": "https://newegg.com/p/N82E1"}, SourceKey.NEWEGG) == "NEWEGG-N82E1"

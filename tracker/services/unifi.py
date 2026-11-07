@@ -27,6 +27,7 @@ from tracker.db.models import Event, Listing, Watch
 from tracker.domain import EventKind, ListingSnapshot, Priority, SourceKey, StockStatus
 from tracker.http import FetchError
 from tracker.ingest import Ingestor
+from tracker.outbox import Dispatcher
 from tracker.settings import MonitorSettings
 from tracker.sources.unifi.parser import HomePage, UnifiParseError
 from tracker.sources.unifi.store import CrawlResult
@@ -37,6 +38,13 @@ SOURCE = SourceKey.UNIFI.value
 # A complete crawl returning fewer than this share of active listings is treated as suspect
 # (store glitch, A/B layout) and never used to infer delistings.
 MIN_CRAWL_COVERAGE = 0.5
+# One crawl creating more new listings than this (or this share of the catalog) looks like a
+# store-side change rather than real launches: those are recorded without alerts.
+NEW_LISTING_FLOOD_MIN = 25
+NEW_LISTING_FLOOD_SHARE = 0.2
+# Same idea for delisting.
+DELIST_FLOOD_MIN = 10
+DELIST_FLOOD_SHARE = 0.2
 # Event kinds that make a listing "hot" for a while afterwards.
 _HOT_EVENT_KINDS = (
     EventKind.SOLD_OUT.value,
@@ -52,10 +60,6 @@ class Store(Protocol):
     async def crawl_catalog(self, region: str = "us") -> CrawlResult: ...
     async def fetch_home(self, region: str = "us") -> HomePage: ...
     async def fetch_product(self, slug: str, region: str = "us") -> list[ListingSnapshot]: ...
-
-
-class Dispatcher(Protocol):
-    async def dispatch(self) -> int: ...
 
 
 @dataclass(slots=True)
@@ -143,8 +147,23 @@ class UnifiService:
                     Listing.delisted_at.is_(None),
                 )
             )
+            active_before = active_before or 0
             ingestor = Ingestor(session)
             report = await ingestor.ingest(result.snapshots, observed_at=started)
+
+            new_events = [e for e in report.events if e.kind == EventKind.NEW_LISTING]
+            flood_limit = max(NEW_LISTING_FLOOD_MIN, int(NEW_LISTING_FLOOD_SHARE * active_before))
+            if len(new_events) > flood_limit:
+                logger.warning(
+                    "[%s] %d new listings in one crawl (limit %d); recording without alerts",
+                    region,
+                    len(new_events),
+                    flood_limit,
+                )
+                for event in new_events:
+                    await session.delete(event)
+                report.events = [e for e in report.events if e.kind != EventKind.NEW_LISTING]
+
             delisted: list[Event] = []
             if not result.complete:
                 logger.warning(
@@ -152,16 +171,24 @@ class UnifiService:
                     region,
                     len(result.errors),
                 )
-            elif len(result.snapshots) < MIN_CRAWL_COVERAGE * (active_before or 0):
+            elif len(result.snapshots) < MIN_CRAWL_COVERAGE * active_before:
                 logger.warning(
                     "[%s] crawl returned %d listings vs %d active; skipping delisting",
                     region,
                     len(result.snapshots),
                     active_before,
                 )
+            elif await ingestor.is_baseline(SOURCE, region):
+                # First complete crawl: from now on, unseen listings are genuinely new.
+                await ingestor.mark_baseline_complete(SOURCE, region, started)
+                logger.info("[%s] baseline complete: %d listings", region, len(result.snapshots))
             else:
                 delisted = await ingestor.mark_delisted(
-                    SOURCE, region, stale_before=started - grace, now=started
+                    SOURCE,
+                    region,
+                    stale_before=started - grace,
+                    now=started,
+                    max_count=max(DELIST_FLOOD_MIN, int(DELIST_FLOOD_SHARE * active_before)),
                 )
             new_slugs = [
                 slug

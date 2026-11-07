@@ -215,7 +215,44 @@ Each phase ends in a working, deployable state. The old bot keeps running until 
 **Not yet verified:** an Early Access drop observed live (no EA items were public during testing),
 and graceful SIGTERM shutdown on Linux/Docker (handler installed, untested on Windows).
 
-**Next: Phase 2 (alerts and the Discord rebuild).**
+**2026-11-07: Phase 2 done** (same branch). The legacy bot is retired.
+- **Discord bot** (`tracker/bot/`): 13 slash commands. `/watch` (SKU/name autocomplete or any
+  store URL, optional region and max price), `/unwatch`, `/watches`, `/subscribe`, `/stock`
+  (per-region status and history), `/radar`, `/restocks`, `/status`, and admin `/check`,
+  `/priority`, `/testalert`, `/cleanup`. Alerts carry persistent **Open** and **Watch**
+  buttons. With `DISCORD_GUILD_ID` set, commands sync instantly and the old bot's stale global
+  commands are cleared.
+- **Alert routing** (`tracker/alerts.py`): important kinds go to the alert channel with pings
+  (watchers honoring max price, global subscribers, an optional role). Routine kinds go to an
+  optional radar channel, as digests when there are many. Price drops ping watchers.
+  A 10-minute per-listing cooldown suppresses flapping.
+- **Sinks:** Discord, Twilio SMS (back in stock and EA by default), and logging, all on the
+  durable outbox. Message cleanup is ported (opt-in).
+- **Other retailers:** JSON-LD first, ported per-site fallbacks scoped to the buy box, and
+  anti-bot detection (captcha, Cloudflare challenge) with backoff. All four sites block plain
+  HTTP from a residential IP; real block pages are kept as test fixtures.
+- **Upgrade path:** on first start the old `watchlist.json`/`subscribers.json` are imported
+  automatically (once). Old env names still work, and placeholder token/channel values are
+  treated as unset.
+- **Deploy:** uv-based Dockerfile (Python 3.13, locked deps, no Chromium), the systemd script
+  and unit run `tracker run`, and the Docker setup script smoke-tests a product fetch.
+- **Removed:** `bot.py`, `monitor.py`, `scrapers.py`, `checkout.py`, `config.py`,
+  `requirements.txt`, YAML product packs, and the triage/rebuild scripts.
+- **Bug caught live and fixed:** the legacy import created rows before the first crawl, so the
+  first crawl emitted 840 `new_listing` events (840 pings). Baselines are now an explicit marker
+  set only by a complete crawl (migration 0004 `meta`), and two flood guards were added: more than
+  25 or 20% new listings in one crawl are recorded silently, and mass delisting (more than 10 or
+  20%) is refused.
+- 133 tests, including offline serialization of every slash command against Discord's limits.
+
+**Not verified:** a live Discord session (no bot token on the dev machine), the Docker image
+build (no Docker on the dev machine; the install steps were mirrored with `uv sync --locked
+--no-dev`), and the systemd script beyond `bash -n`.
+
+**Parity notes:** guarded checkout returns in Phase 6. YAML product packs are replaced by
+full-catalog tracking plus `/priority`.
+
+**Next: Phase 3 (market intelligence: resale comps, profit engine, opportunity score).**
 
 ## 5. Risks and open questions
 

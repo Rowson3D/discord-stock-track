@@ -43,13 +43,14 @@ Troubleshooting commands:
   journalctl -u ${SERVICE_NAME}.service -n 100 --no-pager
   sudo sed -n '1,40p' ${SERVICE_FILE}
   sudo sed -n '1,10p' ${ENV_FILE}
-  ${VENV_DIR}/bin/python ${REPO_DIR}/bot.py
+  ${VENV_DIR}/bin/tracker run
+  ${VENV_DIR}/bin/tracker unifi product u7-pro
 
 Common fixes:
   - If status says bad-setting, the service file is malformed or not overwritten.
   - If Python cannot be found, verify VENV_DIR and ExecStart paths.
   - If the bot exits immediately, check DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID in ${ENV_FILE}.
-  - If Playwright fails, rerun: ${VENV_DIR}/bin/playwright install --with-deps chromium
+  - If install fails, Python 3.12+ is required (or install uv: https://docs.astral.sh/uv/).
 EOF
 }
 
@@ -224,7 +225,7 @@ write_service_file() {
     log "Writing systemd unit to $SERVICE_FILE"
     run_root /bin/sh -c "cat > '$SERVICE_FILE' <<EOF
 [Unit]
-Description=Discord Stock Tracker Bot
+Description=UniFi stock and resale tracker
 After=network-online.target
 Wants=network-online.target
 
@@ -236,7 +237,7 @@ WorkingDirectory=${REPO_DIR}
 Environment=PYTHONUNBUFFERED=1
 Environment=STOCK_BOT_DATA_DIR=${DATA_DIR}
 EnvironmentFile=${ENV_FILE}
-ExecStart=${VENV_DIR}/bin/python ${REPO_DIR}/bot.py
+ExecStart=${VENV_DIR}/bin/tracker run
 Restart=always
 RestartSec=10
 NoNewPrivileges=true
@@ -248,14 +249,18 @@ EOF"
 }
 
 install_runtime() {
+    if command -v uv >/dev/null 2>&1; then
+        log "Installing with uv into $VENV_DIR (locked dependencies)"
+        (cd "$REPO_DIR" && UV_PROJECT_ENVIRONMENT="$VENV_DIR" uv sync --locked --no-dev)
+        return
+    fi
+
+    "$PYTHON_BIN" -c 'import sys; sys.exit(sys.version_info < (3, 12))'         || fail "Python 3.12+ required ($PYTHON_BIN is older). Install uv or a newer Python."
     log "Creating virtual environment in $VENV_DIR"
     "$PYTHON_BIN" -m venv "$VENV_DIR"
-
-    log "Installing Python dependencies"
-    "$VENV_DIR/bin/pip" install -r "$REPO_DIR/requirements.txt"
-
-    log "Installing Playwright Chromium dependencies"
-    "$VENV_DIR/bin/playwright" install --with-deps chromium
+    log "Installing tracker and dependencies with pip"
+    "$VENV_DIR/bin/pip" install --upgrade pip
+    "$VENV_DIR/bin/pip" install "$REPO_DIR"
 }
 
 start_service() {
@@ -266,11 +271,10 @@ start_service() {
 }
 
 main() {
-    require_file "$REPO_DIR/bot.py"
-    require_file "$REPO_DIR/requirements.txt"
+    require_file "$REPO_DIR/pyproject.toml"
     require_file "$ENV_TEMPLATE_FILE"
 
-    command -v "$PYTHON_BIN" >/dev/null 2>&1 || fail "Python interpreter not found: $PYTHON_BIN"
+    command -v uv >/dev/null 2>&1 || command -v "$PYTHON_BIN" >/dev/null 2>&1         || fail "Neither uv nor $PYTHON_BIN found"
     command -v systemctl >/dev/null 2>&1 || fail "systemctl is required for this setup"
 
     log "Repo directory: $REPO_DIR"

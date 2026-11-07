@@ -125,9 +125,18 @@ async def test_category_view_without_early_access_flag_keeps_it(session: AsyncSe
     assert (await _listing(session)).is_early_access is True
 
 
-async def test_new_listing_after_baseline_emits_event(session: AsyncSession):
+async def test_new_listing_only_after_baseline_is_marked(session: AsyncSession):
     ingestor = Ingestor(session)
     await ingestor.ingest([make_snapshot()], observed_at=T0)
+
+    # Rows existing isn't enough (e.g. a legacy import ran first): no baseline yet.
+    early = await Ingestor(session).ingest(
+        [make_snapshot(external_id="E7-US", sku="E7", product_key="ubiquiti:e7")],
+        observed_at=T0 + timedelta(minutes=30),
+    )
+    assert early.events == []
+
+    await ingestor.mark_baseline_complete("unifi", "us", T0)
 
     report = await Ingestor(session).ingest(
         [make_snapshot(external_id="U7-Pro-Max-US", sku="U7-Pro-Max", product_key="ubiquiti:max")],
@@ -166,3 +175,13 @@ async def test_other_retailer_shares_variant_without_hijacking_product(session: 
     assert await _count(session, Listing) == 2
     products = (await session.scalars(select(Product))).all()
     assert [p.name for p in products] == ["Access Point U7 Pro"]
+
+
+async def test_url_retailers_never_emit_new_listing(session: AsyncSession):
+    ingestor = Ingestor(session)
+    await ingestor.mark_baseline_complete("unifi", "us", T0)
+    report = await ingestor.ingest(
+        [make_snapshot(source=SourceKey.AMAZON, external_id="https://amazon.com/dp/X")],
+        observed_at=T0,
+    )
+    assert report.events == []

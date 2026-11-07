@@ -52,6 +52,8 @@ class AppSettings(BaseSettings):
         validation_alias=AliasChoices("TRACKER_LOG_FILE", "STOCK_BOT_LOG_FILE"),
     )
     log_json: bool = False
+    # On startup, import the old bot's watchlist.json/subscribers.json once (marker file).
+    auto_import_legacy: bool = True
 
     @field_validator("log_level")
     @classmethod
@@ -65,12 +67,88 @@ class AppSettings(BaseSettings):
         return f"sqlite+aiosqlite:///{(self.data_dir / 'tracker.db').resolve().as_posix()}"
 
 
+_DEFAULT_MENTION_KINDS = ["back_in_stock", "early_access", "new_listing", "relisted"]
+_PLACEHOLDER_TOKENS = {"replace-me", "YOUR_BOT_TOKEN_HERE"}
+_PLACEHOLDER_IDS = {"123456789012345678", ""}
+
+
 class DiscordSettings(BaseSettings):
     model_config = _config("DISCORD_")
 
     bot_token: SecretStr | None = None
+    # Important alerts (back in stock, Early Access, new, relisted) with pings.
     channel_id: int | None = None
+    # Routine radar events (sold out, price, restock ETA, delisted). Defaults to channel_id.
+    radar_channel_id: int | None = None
+    # Set for instant slash-command sync to one server; global sync can take up to an hour.
+    guild_id: int | None = None
+    # Extra mention on important alerts: "<@123>", "<@&role_id>", "@here".
     alert_mention: str = ""
+    admin_user_ids: CommaList = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("DISCORD_ADMIN_USER_IDS", "CHECKOUT_ALLOWED_APPROVERS"),
+    )
+    mention_kinds: CommaList = Field(default_factory=lambda: list(_DEFAULT_MENTION_KINDS))
+    # Same alert kind for the same listing within this window is suppressed (flapping).
+    alert_cooldown_minutes: float = Field(default=10, ge=0)
+    # More routine events than this in one batch are combined into a digest embed.
+    digest_threshold: int = Field(default=5, ge=1)
+
+    _split = field_validator("admin_user_ids", "mention_kinds", mode="before")(_split_commas)
+
+    @field_validator("channel_id", "radar_channel_id", "guild_id", mode="before")
+    @classmethod
+    def _placeholder_id(cls, value: object) -> object:
+        # The example env file ships with 123456789012345678; treat it as unset.
+        return None if str(value).strip() in _PLACEHOLDER_IDS else value
+
+    @property
+    def enabled(self) -> bool:
+        if not self.bot_token:
+            return False
+        token = self.bot_token.get_secret_value().strip()
+        return bool(token) and token not in _PLACEHOLDER_TOKENS
+
+
+class SmsSettings(BaseSettings):
+    """Twilio SMS for top-tier alerts. Env names match the original bot."""
+
+    model_config = _config("SMS_")
+
+    enabled: bool = False
+    provider: str = "twilio"
+    account_sid: str = Field(default="", validation_alias="TWILIO_ACCOUNT_SID")
+    auth_token: SecretStr | None = Field(default=None, validation_alias="TWILIO_AUTH_TOKEN")
+    from_number: str = Field(default="", validation_alias="TWILIO_FROM_NUMBER")
+    to_numbers: CommaList = Field(default_factory=list)
+    timeout_seconds: float = 10
+    kinds: CommaList = Field(default_factory=lambda: ["back_in_stock", "early_access"])
+
+    _split = field_validator("to_numbers", "kinds", mode="before")(_split_commas)
+
+    @property
+    def configured(self) -> bool:
+        return bool(
+            self.enabled
+            and self.provider == "twilio"
+            and self.account_sid
+            and self.auth_token
+            and self.from_number
+            and self.to_numbers
+        )
+
+
+class CleanupSettings(BaseSettings):
+    """Delete the bot's own old messages from alert channels. Env names match the original bot."""
+
+    model_config = _config("MESSAGE_CLEANUP_")
+
+    enabled: bool = False
+    ttl_minutes: float = Field(default=60, ge=1)
+    interval_minutes: float = Field(default=10, ge=1)
+    scan_limit: int = Field(default=200, ge=1)
+    max_deletes_per_run: int = Field(default=25, ge=1)
+    delete_delay_seconds: float = Field(default=1.25, ge=0.5)
 
 
 class HttpSettings(BaseSettings):
@@ -135,6 +213,22 @@ class MonitorSettings(BaseSettings):
     event_max_age_minutes: float = Field(default=60, ge=1)
 
 
+class RetailSettings(BaseSettings):
+    """Polling for URL-based retailers (Amazon, Best Buy, B&H, Newegg)."""
+
+    model_config = _config("TRACKER_RETAIL_")
+
+    amazon_interval_seconds: float = Field(default=300, ge=30)
+    bestbuy_interval_seconds: float = Field(default=120, ge=30)
+    bhphoto_interval_seconds: float = Field(default=60, ge=30)
+    newegg_interval_seconds: float = Field(default=60, ge=30)
+    tick_seconds: float = Field(default=15, ge=1)
+    max_per_tick: int = Field(default=3, ge=1)
+
+    def interval_for(self, source: str) -> float:
+        return float(getattr(self, f"{source}_interval_seconds", 120))
+
+
 class Settings:
     """Aggregate of all settings groups."""
 
@@ -145,6 +239,9 @@ class Settings:
         self.http = HttpSettings(_env_file=env_file)  # type: ignore[call-arg]
         self.unifi = UnifiSettings(_env_file=env_file)  # type: ignore[call-arg]
         self.monitor = MonitorSettings(_env_file=env_file)  # type: ignore[call-arg]
+        self.retail = RetailSettings(_env_file=env_file)  # type: ignore[call-arg]
+        self.sms = SmsSettings(_env_file=env_file)  # type: ignore[call-arg]
+        self.cleanup = CleanupSettings(_env_file=env_file)  # type: ignore[call-arg]
 
 
 @lru_cache(maxsize=1)

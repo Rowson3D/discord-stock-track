@@ -4,24 +4,32 @@ Rules:
 * A listing's state is only written to history when something actually changed.
 * An `unknown` status never overwrites a known one (scrape failures must not erase state
   and cause missed back-in-stock transitions).
-* The first time a (source, region) is seen is a *baseline*: rows are created silently,
-  without `new_listing` events, so an initial catalog crawl doesn't flood the radar.
+* `new_listing` events only fire for a (source, region) whose first *complete* crawl has
+  been recorded (`mark_baseline_complete`). Until then everything is baseline: rows are
+  created silently. Sources that are never crawled (URL retailers) never fire it.
 * Delisting is inferred, never observed: `mark_delisted()` flags listings that no source has
   confirmed for a grace period. Seeing a delisted listing again relists it.
 """
 
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from sqlalchemy import exists, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tracker.db.models import Event, Listing, Product, StockObservation, Variant
+from tracker.db.models import Event, Listing, Meta, Product, StockObservation, Variant
 from tracker.domain import EventKind, ListingSnapshot, StockStatus, format_cents
+
+logger = logging.getLogger(__name__)
+
+
+def baseline_key(source: str, region: str) -> str:
+    return f"baseline:{source}:{region}"
 
 
 @dataclass(slots=True)
@@ -56,12 +64,19 @@ class Ingestor:
         return report
 
     async def mark_delisted(
-        self, source: str, region: str, *, stale_before: datetime, now: datetime | None = None
+        self,
+        source: str,
+        region: str,
+        *,
+        stale_before: datetime,
+        now: datetime | None = None,
+        max_count: int | None = None,
     ) -> list[Event]:
         """Flag listings in (source, region) not confirmed since `stale_before` as delisted.
 
         Call only after a *complete* crawl of that source/region, otherwise a failed
-        category would delist everything in it.
+        category would delist everything in it. More than `max_count` candidates looks like
+        a store-side identity change (e.g. renamed SKUs), so nothing is delisted.
         """
         now = now or datetime.now(UTC)
         stale = (
@@ -75,6 +90,16 @@ class Ingestor:
                 )
             )
         ).all()
+        if max_count is not None and len(stale) > max_count:
+            logger.error(
+                "%s/%s: %d listings look delisted at once (limit %d); not delisting. "
+                "Did the store change its SKUs?",
+                source,
+                region,
+                len(stale),
+                max_count,
+            )
+            return []
         events: list[Event] = []
         for listing in stale:
             listing.delisted_at = now
@@ -92,14 +117,17 @@ class Ingestor:
         await self._session.flush()
         return events
 
-    async def _is_baseline(self, source: str, region: str) -> bool:
+    async def is_baseline(self, source: str, region: str) -> bool:
         key = (source, region)
         if key not in self._baseline:
-            has_rows = await self._session.scalar(
-                select(exists().where(Listing.source == source, Listing.region == region))
-            )
-            self._baseline[key] = not has_rows
+            marker = await self._session.get(Meta, baseline_key(source, region))
+            self._baseline[key] = marker is None
         return self._baseline[key]
+
+    async def mark_baseline_complete(self, source: str, region: str, now: datetime) -> None:
+        if await self._session.get(Meta, baseline_key(source, region)) is None:
+            self._session.add(Meta(key=baseline_key(source, region), value=now.isoformat()))
+        self._baseline[(source, region)] = False
 
     @staticmethod
     def _refresh_product(product: Product, snapshot: ListingSnapshot) -> None:
@@ -145,7 +173,7 @@ class Ingestor:
     async def _ingest_one(
         self, snapshot: ListingSnapshot, now: datetime, report: IngestReport
     ) -> None:
-        baseline = await self._is_baseline(snapshot.source, snapshot.region)
+        baseline = await self.is_baseline(snapshot.source, snapshot.region)
         listing = await self._session.scalar(
             select(Listing).where(
                 Listing.source == snapshot.source.value,

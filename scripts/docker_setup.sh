@@ -103,8 +103,8 @@ main() {
     log "Building and starting container"
     docker compose up -d --build
 
-    log "Running stock triage"
-    docker compose run --rm "$SERVICE_NAME" python scripts/triage_stock.py
+    log "Smoke test: fetching one product from the UniFi store"
+    docker compose run --rm "$SERVICE_NAME" tracker unifi product u7-pro
 
     log "Setup complete"
     log "Logs: docker compose logs -f $SERVICE_NAME"

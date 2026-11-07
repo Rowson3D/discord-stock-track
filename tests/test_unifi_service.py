@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tests.conftest import T0, make_snapshot
 from tracker.db.models import Event, Listing, Watch
 from tracker.domain import EventKind, ListingSnapshot, StockStatus
+from tracker.ingest import Ingestor
 from tracker.services.unifi import UnifiService, slug_from_url
 from tracker.settings import MonitorSettings
 from tracker.sources.unifi.parser import FreshlyStocked, HomePage
@@ -191,3 +192,37 @@ def test_slug_from_url():
     assert slug_from_url("https://store.ui.com/us/en/products/u7-pro") == "u7-pro"
     assert slug_from_url("https://ca.store.ui.com/ca/en/products/u7-pro?x=1") == "u7-pro"
     assert slug_from_url("https://www.amazon.com/dp/B0ABCDEFGH") is None
+
+
+async def test_legacy_rows_before_first_crawl_do_not_flood_new_listings(service, store, sessions):
+    """Regression: a legacy import created rows before the first crawl, which made every
+    catalog item a `new_listing` (840 pings on the first start after upgrading)."""
+    async with sessions() as session, session.begin():
+        await Ingestor(session, emit_events=False).ingest([product("utr")], observed_at=T0)
+
+    store.catalog = [product("utr")] + [product(f"item-{i}") for i in range(40)]
+    await service.crawl("us")
+    assert await _events(sessions) == []
+
+
+async def test_new_listing_flood_is_recorded_without_alerts(service, store, clock, sessions):
+    store.catalog = [product(f"old-{i}") for i in range(10)]
+    await service.crawl("us")
+
+    # 30 "new" products at once (> 25): looks like a store-side change, not launches.
+    store.catalog += [product(f"new-{i}") for i in range(30)]
+    clock.advance(minutes=5)
+    stats = await service.crawl("us")
+    assert stats.created == 30
+    assert await _events(sessions) == []
+    assert service.pending_count() == 0
+
+
+async def test_mass_delisting_is_refused(service, store, clock, sessions):
+    store.catalog = [product(f"old-{i}") for i in range(20)]
+    await service.crawl("us")
+    # Same catalog size, but every SKU renamed: coverage looks fine, delisting would be 20.
+    store.catalog = [product(f"renamed-{i}") for i in range(20)]
+    clock.advance(hours=2)
+    stats = await service.crawl("us")
+    assert stats.delisted == 0

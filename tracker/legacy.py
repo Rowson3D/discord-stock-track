@@ -1,7 +1,7 @@
 """One-time import of the original bot's `watchlist.json` and `subscribers.json`.
 
 * UniFi URLs are resolved through the store parser into real per-variant listings.
-* Other retailers become URL-keyed listings (their scrapers are ported in Phase 2).
+* Other retailers become URL-keyed listings, polled by tracker.services.retail.
 * Per-entry `watchers` become watches on the imported listings; global subscribers
   become watches with no listing (alerts for everything).
 * Importing is idempotent: running it twice creates nothing new.
@@ -16,7 +16,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import urlsplit
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +26,7 @@ from tracker.domain import ListingSnapshot, Priority, SourceKey, StockStatus
 from tracker.http import FetchError
 from tracker.ingest import Ingestor
 from tracker.sources.unifi.parser import UnifiParseError
+from tracker.sources.web import parse_money, url_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +38,6 @@ LEGACY_SITES: dict[str, SourceKey] = {
     "newegg.com": SourceKey.NEWEGG,
 }
 _UNIFI_PATH_RE = re.compile(r"^/(?P<region>[a-z]{2,5})/[a-z]{2}/products/(?P<slug>[A-Za-z0-9-]+)")
-_ASIN_RE = re.compile(r"/(?:dp|gp/product)/(?P<asin>[A-Z0-9]{10})")
-_PRICE_RE = re.compile(r"(\d[\d,]*)(?:\.(\d{1,2}))?")
 
 
 class ProductFetcher(Protocol):
@@ -62,17 +61,6 @@ def _read_json(path: Path | None) -> Any:
         return json.load(handle)
 
 
-def parse_legacy_price(value: Any) -> int | None:
-    if value is None:
-        return None
-    match = _PRICE_RE.search(str(value))
-    if not match:
-        return None
-    whole = int(match.group(1).replace(",", ""))
-    fraction = int((match.group(2) or "0").ljust(2, "0"))
-    return whole * 100 + fraction
-
-
 def legacy_status(value: Any) -> StockStatus:
     try:
         return StockStatus(str(value))
@@ -80,43 +68,18 @@ def legacy_status(value: Any) -> StockStatus:
         return StockStatus.UNKNOWN
 
 
-def legacy_sku(entry: dict[str, Any], source: SourceKey) -> str:
-    """Best-effort stable SKU for a non-UniFi legacy entry."""
-    if entry.get("sku"):
-        return str(entry["sku"])
-    url = str(entry["url"])
-    parts = urlsplit(url)
-    if source is SourceKey.AMAZON and (match := _ASIN_RE.search(parts.path)):
-        return f"AMZN-{match.group('asin')}"
-    if source is SourceKey.BESTBUY and (sku_ids := parse_qs(parts.query).get("skuId")):
-        return f"BBY-{sku_ids[0]}"
-    slug = parts.path.rstrip("/").rsplit("/", 1)[-1] or parts.netloc
-    return f"{source.value.upper()}-{slug}"[:100]
-
-
 def _snapshot_for_url_entry(entry: dict[str, Any], source: SourceKey) -> ListingSnapshot:
-    sku = legacy_sku(entry, source)
-    name = entry.get("name") if entry.get("name") != entry["url"] else None
-    return ListingSnapshot(
-        source=source,
-        region="us",
-        external_id=str(entry["url"]),
-        url=str(entry["url"]),
-        product_key=f"{source.value}:{sku.lower()}",
-        product_name=name or sku,
-        brand=str(entry.get("vendor") or source.value),
-        category=entry.get("category"),
-        sku=sku,
-        variant_title=None,
-        pack_size=1,
+    url = str(entry["url"])
+    name = entry.get("name") if entry.get("name") != url else None
+    return url_snapshot(
+        url,
+        source,
+        name=name,
         status=legacy_status(entry.get("last_status")),
-        raw_status=entry.get("last_status"),
-        price_cents=parse_legacy_price(entry.get("last_price")),
-        regular_price_cents=None,
-        currency="USD",
-        is_early_access=None,
-        sold_out_at=None,
-        restock_eta=None,
+        price_cents=parse_money(entry.get("last_price")),
+        brand=entry.get("vendor"),
+        sku=entry.get("sku"),
+        category=entry.get("category"),
         quantity=entry.get("last_quantity"),
     )
 

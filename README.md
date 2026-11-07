@@ -1,578 +1,187 @@
-# Tracker Network Stock Bot
+# Tracker Network Stock
 
-Discord stock-alert bot for monitoring retailer product pages and posting stock changes to a configured Discord channel, with optional SMS alerts.
+UniFi stock and launch radar with Discord alerts. It tracks the **entire Ubiquiti store** in
+every region you choose, records full stock and price history, and pings the right people when
+something worth buying appears.
 
-The bot currently supports Ubiquiti, Amazon, Best Buy, B&H Photo, and Newegg. Ubiquiti pages use Playwright Chromium because the store is JavaScript-rendered; other retailers use HTML scraping.
+> Building toward a resale-intelligence platform: resale prices, profit, opportunity ranking,
+> a web dashboard, and a P&L ledger. See [docs/ROADMAP.md](docs/ROADMAP.md). Phases 0–2 are done.
 
-> **Rebuild in progress.** The project is being rebuilt into a UniFi resale-intelligence platform
-> under [`tracker/`](tracker) — see [docs/ROADMAP.md](docs/ROADMAP.md). The legacy bot below keeps
-> running unchanged until the new one reaches parity (Phase 2).
+## What It Does
 
-## New Platform (Developer Preview)
+- **Full-catalog tracking, no browser.** It reads the UniFi store's embedded structured data over
+  plain HTTP: about 840 listings per region in about 10 seconds, every 5 minutes. Each listing
+  carries variant-level stock, price, pack size, sold-out time, restock ETA, and coming-soon status.
+- **Fast restock detection.** The store's freshly-stocked and what's-new feeds are checked every
+  minute and trigger immediate product checks. "Hot" listings are re-checked about every minute:
+  watched, high priority, Early Access, coming soon, restock due within 3 days, or recently sold
+  out.
+- **Launch radar.** Back in stock, sold out, price changes, restock ETAs, Early Access, new
+  listings, delisted and relisted. Every event is stored and visible with `/radar`.
+- **Multi-region.** `us`, `ca`, `uk`, `eu`. The CA store sells US SKUs in CAD, so the same variant
+  is linked across regions.
+- **Smart alerts.** Important events go to an alert channel with pings: watchers (optionally only
+  below a max price), global subscribers, and an optional role. Routine events go to a radar
+  channel, batched into digests. Flapping is suppressed. Alerts survive restarts (durable outbox).
+- **Other retailers.** Amazon, Best Buy, B&H, and Newegg URLs can be watched. They're parsed via
+  schema.org data with anti-bot detection and automatic backoff. These sites often block bots;
+  see [Known Limits](#known-limits).
+- **Optional SMS (Twilio)** and automatic cleanup of the bot's old messages.
 
-Requires [uv](https://docs.astral.sh/uv/). The new UniFi source reads the store's embedded
-structured data over plain HTTP, with no browser. It crawls the full catalog (every variant, pack size,
-price, sold-out time, and restock ETA) in about 10 seconds.
+## Quick Start (Docker)
 
 ```bash
-uv sync                                   # create .venv and install dependencies
-uv run tracker unifi product u7-pro       # parse one product page
-uv run tracker unifi crawl                # crawl the whole store, show unavailable items
-uv run tracker unifi crawl --save         # store results in data/tracker.db, print radar events
-uv run tracker import-legacy              # migrate data/watchlist.json + subscribers.json
-uv run tracker run                        # continuous tracking (Ctrl+C to stop); events go to the log
-uv run tracker radar --limit 50           # recent radar events (back in stock, price, ETA, EA, ...)
-uv run tracker db upgrade                 # apply database migrations
-uv run pytest                             # tests (parsers run against recorded store pages)
-uv run ruff check . && uv run ruff format --check .
+git clone <your-repo-url> && cd tracker-network-stock
+./scripts/docker_setup.sh          # prompts for token and channel if .env is missing
+docker compose logs -f stock-bot
 ```
 
-`tracker run` combines three loops per region (set `UNIFI_STORE_REGIONS=us,ca,uk,eu`):
-a full catalog crawl every 5 minutes, the home page's freshly-stocked and what's-new feeds
-every minute, and "hot" product-page polls every 10 seconds. Hot listings are watched,
-high-priority, Early Access, coming soon, restocking within 3 days, or recently sold out or
-restocked. Events go into the database first and are dispatched from there, so nothing is
-lost across restarts. Listings missing from complete crawls for 45 minutes are marked
-delisted.
+Or manually:
 
-Schema changes: edit `tracker/db/models.py`, then
-`uv run alembic revision --autogenerate -m "describe change"`. `tests/test_migrations.py` fails if
-models and migrations drift apart.
+```bash
+cp tracker-network-stock.env.example .env   # set DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID
+docker compose up -d --build
+```
 
-## Features
+Data (SQLite database) lives in the `stock-bot-data` volume at `/data`.
 
-- Polls configured products on per-retailer intervals.
-- Sends Discord embeds when products become available or low stock.
-- Can also send SMS alerts through Twilio when enabled.
-- Preserves last known status when a scraper returns `unknown`, preventing missed back-in-stock transitions caused by transient page or browser failures.
-- Persists watchlist data across restarts.
-- Can run guarded `ui.com` add-to-cart / checkout-review flows with quantity, price, and cooldown limits.
-- Includes Docker Compose, systemd, and local development workflows.
-- Includes a triage script for scraper/browser/alert-state verification.
+### Upgrading From the Old Bot
 
-## Supported Retailers
+`git pull && docker compose up -d --build`. On first start, the tracker imports the old
+`/data/watchlist.json` and `subscribers.json` automatically (once; a `.legacy-imported` marker is
+written):
 
-| Retailer | Site Key | Default Interval | Notes |
-|---|---:|---:|---|
-| Ubiquiti Store | `ui.com` | 60s | Uses Playwright Chromium with HTTP fallback. |
-| Amazon | `amazon.com` | 300s | Higher interval recommended because Amazon blocks aggressive scraping. |
-| Best Buy | `bestbuy.com` | 120s | Useful for GPU stock checks; HTML scraper. |
-| B&H Photo | `bhphotovideo.com` | 60s | HTML scraper. |
-| Newegg | `newegg.com` | 60s | HTML scraper. |
+- UniFi URLs become real per-variant listings.
+- Other retailer URLs carry over.
+- Per-item watchers become watches; subscribers become global subscriptions.
 
-## Requirements
+The old `!` prefix commands are gone; everything is a slash command now. Set `DISCORD_GUILD_ID`
+to sync commands instantly and remove the old bot's stale global commands.
 
-For Docker deployment:
-
-- Linux host
-- Docker Engine
-- Docker Compose plugin (`docker compose version`)
-
-For local Python or systemd deployment:
-
-- Python 3.12 recommended
-- `pip`
-- Playwright Chromium (`playwright install chromium`; use `--with-deps` on Linux)
+Not carried over yet: guarded checkout (returns in Phase 6) and YAML product packs (superseded by
+full-catalog tracking; use `/priority` to poll key SKUs faster).
 
 ## Discord Setup
 
-1. Open https://discord.com/developers/applications.
-2. Create an application and add a bot.
-3. Copy the bot token.
-4. Enable **Message Content Intent** under the bot settings.
-5. Invite the bot with these permissions: `View Channels`, `Send Messages`, `Embed Links`.
-6. Enable Discord Developer Mode and copy the target channel ID.
+1. Create an application and bot at https://discord.com/developers/applications and copy the token.
+   No privileged intents are needed.
+2. Invite it with the `bot` and `applications.commands` scopes, and these permissions:
+   View Channels, Send Messages, Embed Links, Read Message History.
+3. With Developer Mode on, copy the alert channel ID (and optionally a radar channel and your
+   server ID).
+
+```dotenv
+DISCORD_BOT_TOKEN=...
+DISCORD_CHANNEL_ID=...          # important alerts with pings
+DISCORD_RADAR_CHANNEL_ID=...    # optional: routine radar (defaults to the alert channel)
+DISCORD_GUILD_ID=...            # optional: instant slash-command sync
+DISCORD_ALERT_MENTION=<@&role>  # optional: extra mention on important alerts
+```
+
+Without a token, the tracker runs headless and writes events to the log.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `/watch product [region] [max_price]` | Get pinged for back in stock, Early Access, and price drops. `product` autocompletes SKUs and names, or accepts a store URL (UniFi, Amazon, Best Buy, B&H, Newegg). |
+| `/unwatch product` | Stop watching. |
+| `/watches` | Your watches with live status and price. |
+| `/subscribe` / `/unsubscribe` | Get pinged for every important alert. |
+| `/stock product` | Status, price, ETA, last in stock, and recent history across regions. |
+| `/radar [kind] [limit]` | Recent radar events. |
+| `/restocks [days]` | Sold-out items with an announced restock date. |
+| `/status` | Health: catalog counts per region, last checks, scheduler jobs, events. |
+| `/check product` | *Admin.* Check a product right now. |
+| `/priority product level` | *Admin.* `high` / `normal` / `low` polling priority. |
+| `/testalert [kind] [delay]` | *Admin.* Post a sample alert here (use a delay to test phone push). |
+| `/cleanup` | *Admin.* Delete the bot's old messages now. |
+
+Alert messages include **Open** and **Watch** buttons; the Watch button works for anyone and
+survives restarts. Admin means Manage Server permission or a user ID in `DISCORD_ADMIN_USER_IDS`.
 
 ## Configuration
 
-Create a `.env` file from the example:
+Everything is set with environment variables. See
+[tracker-network-stock.env.example](tracker-network-stock.env.example) for the full annotated list.
+Highlights:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `UNIFI_STORE_REGIONS` | `us` | Regions to track, e.g. `us,ca` |
+| `TRACKER_MONITOR_CATALOG_INTERVAL_SECONDS` | `300` | Full catalog crawl |
+| `TRACKER_MONITOR_HOT_POLL_INTERVAL_SECONDS` | `60` | Re-check interval for hot listings |
+| `DISCORD_MENTION_KINDS` | `back_in_stock,early_access,new_listing,relisted` | Which events ping |
+| `DISCORD_ALERT_COOLDOWN_MINUTES` | `10` | Suppress repeats of the same alert |
+| `SMS_ENABLED` + `TWILIO_*` + `SMS_TO_NUMBERS` | off | SMS for back in stock and Early Access |
+| `MESSAGE_CLEANUP_ENABLED` | `false` | Delete the bot's own messages after `MESSAGE_CLEANUP_TTL_MINUTES` |
+
+Old variable names (`STOCK_BOT_DATA_DIR`, `STOCK_BOT_LOG_*`, `CHECKOUT_ALLOWED_APPROVERS` for
+admins, Twilio and cleanup settings) still work.
+
+## CLI
 
 ```bash
-cp tracker-network-stock.env.example .env
-nano .env
+uv run tracker run                     # the full tracker (bot + scheduler); Ctrl+C to stop
+uv run tracker unifi product u7-pro    # parse one product page
+uv run tracker unifi crawl [--save]    # crawl a whole region once
+uv run tracker radar --kind back_in_stock
+uv run tracker import-legacy           # manual import of old watchlist/subscribers
+uv run tracker db upgrade              # apply migrations (also automatic on start)
 ```
 
-Required variables:
+In Docker: `docker compose run --rm stock-bot tracker <command>`.
 
-```dotenv
-DISCORD_BOT_TOKEN=your-token
-DISCORD_CHANNEL_ID=123456789012345678
+## Other Deployments
+
+**Local:** install [uv](https://docs.astral.sh/uv/), then `uv sync`, `cp
+tracker-network-stock.env.example .env`, and `uv run tracker run`.
+
+**systemd:** run `./setup_linux_service.sh`. It installs with uv (or pip on Python 3.12+), writes
+`/etc/tracker-network-stock/bot.env`, and enables `tracker-network-stock.service`. Logs:
+`journalctl -u tracker-network-stock.service -f`.
+
+## Development
+
+```bash
+uv sync
+uv run pytest                          # parsers run against recorded real store pages
+uv run ruff check . && uv run ruff format --check .
+uv run alembic revision --autogenerate -m "describe change"   # after editing tracker/db/models.py
 ```
-
-Discord mobile push is enabled by default. Stock alerts now send short text line with embed, which gives mobile apps much better chance to fire push notification than embed-only messages. If you want stronger push behavior for mentions-only notification settings, set `DISCORD_ALERT_MENTION` to a user, role, `@here`, or `@everyone` mention string.
-
-Optional variables:
-
-```dotenv
-STOCK_BOT_DATA_DIR=/data
-STOCK_BOT_WATCHLIST_FILE=/data/watchlist.json
-DISCORD_MOBILE_PUSH_ENABLED=true
-DISCORD_ALERT_MENTION=<@123456789012345678>
-POLL_LOOP_MIN_SLEEP_SECONDS=1
-POLL_LOOP_MAX_SLEEP_SECONDS=10
-SMS_ENABLED=false
-SMS_PROVIDER=twilio
-TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-TWILIO_AUTH_TOKEN=your-auth-token
-TWILIO_FROM_NUMBER=+15551234567
-SMS_TO_NUMBERS=+15557654321,+15559876543
-SMS_TIMEOUT_SECONDS=10
-CHECKOUT_ENABLED=false
-CHECKOUT_MODE=review_only
-CHECKOUT_BROWSER_PROFILE_DIR=/data/playwright-profile
-CHECKOUT_ALLOWED_APPROVERS=your-discord-user-id
-CHECKOUT_REQUIRE_ALLOWED_APPROVERS=true
-CHECKOUT_DEFAULT_QUANTITY=1
-CHECKOUT_DEFAULT_MAX_QUANTITY=1
-CHECKOUT_DEFAULT_COOLDOWN_HOURS=24
-CHECKOUT_TEST_TIMEOUT_SECONDS=90
-MESSAGE_CLEANUP_ENABLED=false
-MESSAGE_CLEANUP_TTL_MINUTES=60
-MESSAGE_CLEANUP_INTERVAL_MINUTES=10
-MESSAGE_CLEANUP_MAX_DELETES_PER_RUN=25
-MESSAGE_CLEANUP_DELETE_DELAY_SECONDS=1.25
-MESSAGE_CLEANUP_DELETE_USER_COMMANDS=false
-```
-
-Runtime settings such as retailer intervals, alert toggles, low-stock threshold, and default products live in [config.py](config.py).
-
-SMS uses Twilio's REST API. Set `SMS_ENABLED=true`, fill in the Twilio account values, and provide one or more destination numbers in `SMS_TO_NUMBERS` as a comma-separated list.
-
-Speed notes: high-priority watches now run before normal watches and use half the base site interval by default. Example: `ui.com` high-priority entries check about every 30 seconds, `bestbuy.com` high-priority entries about every 60 seconds. Poll loop also sleeps dynamically now instead of waiting fixed 10 seconds every pass.
-
-Product packs live under [config/products](config/products). The included `unifi_msp` pack adds core UniFi gear commonly sourced by MSPs and installers; `gpu_scalp` seeds high-demand GPU watches such as the RTX 4090 Founders Edition.
-
-## Message Cleanup
-
-Enable cleanup to delete old bot messages from the configured Discord channel:
-
-```dotenv
-MESSAGE_CLEANUP_ENABLED=true
-MESSAGE_CLEANUP_TTL_MINUTES=60
-MESSAGE_CLEANUP_INTERVAL_MINUTES=10
-MESSAGE_CLEANUP_SCAN_LIMIT=200
-MESSAGE_CLEANUP_MAX_DELETES_PER_RUN=25
-MESSAGE_CLEANUP_DELETE_DELAY_SECONDS=1.25
-MESSAGE_CLEANUP_DELETE_USER_COMMANDS=false
-```
-
-The cleanup loop skips pinned messages and only deletes bot messages by default. Set `MESSAGE_CLEANUP_DELETE_USER_COMMANDS=true` to also delete old `!command` messages; the bot needs Discord `Manage Messages` permission for that. Use `!cleanup_now` to run cleanup immediately.
-
-## Guarded Checkout
-
-Checkout is disabled by default and currently supports `ui.com` only. The bot can add an item to cart and open cart/checkout review, but it does not enter card details, CVV, or click final place-order controls.
-
-Recommended setup:
-
-1. Set shipping, billing, and saved payment inside your Ubiquiti account.
-2. Use a persistent Playwright profile directory with `CHECKOUT_BROWSER_PROFILE_DIR`.
-3. Log into Ubiquiti once with that profile before enabling checkout.
-4. Set `CHECKOUT_ENABLED=true` only after login/session is verified.
-5. Configure each watch with quantity and price caps.
-
-Discord commands:
 
 ```text
-!checkout_config <index> <on|off> [qty] [max_qty] [max_unit] [max_order]
-!checkout_test <index> [page|cart]
-!checkout <index>
+tracker/
+├── sources/unifi/    store parser (__NEXT_DATA__), catalog crawler, regions
+├── sources/web.py    Amazon / Best Buy / B&H / Newegg (JSON-LD + fallbacks + block detection)
+├── services/         UniFi monitor (crawl, feeds, hot polls, delisting), retailer poller
+├── ingest.py         snapshots → state, change-only history, radar events
+├── outbox.py         durable event dispatch to sinks
+├── alerts.py         routing, pings, cooldown
+├── bot/              Discord client, slash commands, embeds, buttons, sink, cleanup
+├── sms.py            Twilio sink
+├── scheduler.py      single-flight jobs with jitter and backoff
+├── app.py            wires it all together (`tracker run`)
+└── db/               SQLAlchemy models + Alembic migrations
 ```
 
-Use `!checkout_test <index>` first. It loads the product page with the saved browser profile, confirms the add-to-cart button is visible, and exits without clicking add-to-cart, checkout, payment, or place-order controls.
-
-Use `!checkout_test <index> cart` for a deeper no-charge test. It clicks Add to Cart, verifies a checkout control is visible, and stops before clicking checkout, payment, or place-order controls. The item may remain in the retailer cart.
-
-Example:
-
-```text
-!checkout_config 1 on 1 1 199.00 230.00
-```
-
-Product-pack checkout settings can also be added per vendor/watch entry:
-
-```yaml
-checkout:
-  enabled: true
-  quantity: 1
-  max_quantity: 1
-  max_unit_price: 199.00
-  max_order_total: 230.00
-  cooldown_hours: 24
-```
-
-Do not store full card numbers or CVV in this repo. Use saved retailer payment instead.
-
-## Quick Start: Docker on Linux
-
-Fresh clone:
-
-```bash
-git clone <your-repo-url>
-cd tracker-network-stock
-./scripts/docker_setup.sh
-```
-
-The setup script checks Docker, prompts for Discord settings if `.env` is missing, builds the image, starts the bot, and runs triage.
-
-Non-interactive setup:
-
-```bash
-export DISCORD_BOT_TOKEN="your-token"
-export DISCORD_CHANNEL_ID="123456789012345678"
-./scripts/docker_setup.sh
-```
-
-Manual Compose setup:
-
-```bash
-cp tracker-network-stock.env.example .env
-nano .env
-docker compose up -d --build
-docker compose logs -f stock-bot
-```
-
-The Docker image installs Playwright Chromium at build time. Runtime data is stored in the `stock-bot-data` Docker volume mounted at `/data`.
-
-## Updating a Docker Deployment
-
-On the deployed Linux host:
-
-```bash
-cd tracker-network-stock
-git pull
-docker compose up -d --build
-docker compose logs -f stock-bot
-```
-
-Run triage after update:
-
-```bash
-docker compose run --rm stock-bot python scripts/triage_stock.py
-```
-
-One-command update using the setup script:
-
-```bash
-cd tracker-network-stock
-git pull
-./scripts/docker_setup.sh
-```
-
-## Docker Commands
-
-Rebuild, rerun, and triage with the helper script:
-
-```bash
-./scripts/rebuild_rerun.sh
-./scripts/rebuild_rerun.sh logs
-./scripts/rebuild_rerun.sh gpu-triage
-```
-
-Build image only:
-
-```bash
-docker build -t tracker-network-stock:latest .
-```
-
-Start service:
-
-```bash
-docker compose up -d --build
-```
-
-View logs:
-
-```bash
-docker compose logs -f stock-bot
-```
-
-Stop service:
-
-```bash
-docker compose down
-```
-
-Run without Compose:
-
-```bash
-docker volume create tracker-network-stock-data
-docker run -d \
-  --name tracker-network-stock \
-  --restart unless-stopped \
-  --env-file .env \
-  -e STOCK_BOT_DATA_DIR=/data \
-  -v tracker-network-stock-data:/data \
-  tracker-network-stock:latest
-```
-
-## Local Development
-
-Create environment and install dependencies:
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-playwright install chromium
-```
-
-On Linux, install browser dependencies too:
-
-```bash
-playwright install --with-deps chromium
-```
-
-Run locally:
-
-```bash
-cp tracker-network-stock.env.example .env
-nano .env
-python bot.py
-```
-
-Windows PowerShell activation:
-
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
-.\.venv\Scripts\Activate.ps1
-Copy-Item tracker-network-stock.env.example .env
-python bot.py
-```
-
-## Linux systemd Deployment
-
-Docker is the recommended deployment path. Use systemd when you need a host-managed Python service instead.
-
-Fast setup:
-
-```bash
-git clone <your-repo-url>
-cd tracker-network-stock
-./setup_linux_service.sh
-```
-
-Non-interactive setup:
-
-```bash
-export DISCORD_BOT_TOKEN="your-token"
-export DISCORD_CHANNEL_ID="123456789012345678"
-./setup_linux_service.sh
-```
-
-Restart after config changes:
-
-```bash
-sudo systemctl restart tracker-network-stock.service
-sudo systemctl status tracker-network-stock.service
-```
-
-Logs:
-
-```bash
-journalctl -u tracker-network-stock.service -n 100 --no-pager
-```
-
-The example unit is [stock-bot.service.example](stock-bot.service.example).
-
-## Discord Commands
-
-| Command | Description |
-|---|---|
-| `!watch <url>` | Add a supported product URL to the watchlist. |
-| `!unwatch <index\|url>` | Remove a watch by list number or exact URL. |
-| `!unwatch_pack <pack_id>` | Remove all entries added from a product pack. |
-| `!remove_sku <sku>` | Remove all watch entries for a SKU. |
-| `!clear_watches confirm` | Clear the entire watchlist. |
-| `!list` | Show monitored products in paged embeds with index numbers. |
-| `!packs` | Show available product packs. |
-| `!watch_pack <pack_id>` | Add a product pack to the watchlist. |
-| `!report` | Show current stock summary by status. |
-| `!check` | Force an immediate stock check. |
-| `!test_alert [status]` | Send a simulated alert embed after 15 seconds without changing watchlist state. |
-| `!help_stock` | Show bot command help. |
-
-Examples:
-
-```text
-!watch https://store.ui.com/us/en/products/utr
-!watch https://www.amazon.com/dp/B0XXXXXXXX
-!packs
-!watch_pack unifi_msp
-!watch_pack gpu_scalp
-!report
-!list
-!unwatch 3
-!remove_sku UDM-SE
-!check
-!test_alert in_stock
-```
-
-## MSP Product Packs
-
-Product packs turn the bot from a URL watcher into a procurement monitor. A pack defines SKUs, categories, priority, and vendor URLs. Adding a pack creates one watchlist entry per vendor URL.
-
-Included pack:
-
-| Pack ID | Description |
-|---|---|
-| `unifi_msp` | Core UniFi gateways, switches, access points, cameras, and NVRs for MSP sourcing. |
-| `gpu_scalp` | High-demand GPU watches for retail-priced drops, starting with the RTX 4090 Founders Edition. |
-
-Add the pack:
-
-```text
-!watch_pack unifi_msp
-!watch_pack gpu_scalp
-```
-
-Remove entries later:
-
-```text
-!list
-!unwatch 2
-!remove_sku UDM-SE
-!unwatch_pack unifi_msp
-!clear_watches confirm
-```
-
-Run a live scrape and then show a summary:
-
-```text
-!check
-!report
-```
-
-Each pack product supports this shape:
-
-```yaml
-- sku: UDM-SE
-  name: UniFi Dream Machine Special Edition
-  category: Gateways
-  priority: high
-  vendors:
-    - name: Ubiquiti Store
-      site: ui.com
-      url: https://store.ui.com/us/en/products/udm-se
-```
-
-## Triage and Verification
-
-Run on host Python environment:
-
-```bash
-python scripts/triage_stock.py
-python scripts/triage_stock.py --old-status out_of_stock --simulate-new-status in_stock
-```
-
-Run inside Docker:
-
-```bash
-docker compose run --rm stock-bot python scripts/triage_stock.py
-docker compose run --rm stock-bot python scripts/triage_stock.py --old-status out_of_stock --simulate-new-status in_stock
-```
-
-The triage report includes:
-
-- detected site key
-- Playwright install and launch status for Ubiquiti
-- current scrape result
-- simulated alert decision for status transitions
-
-Expected alert simulation for an available product:
-
-```json
-{
-  "old_status": "out_of_stock",
-  "new_status": "in_stock",
-  "would_send_discord_alert": true
-}
-```
-
-Test the Discord UI from the target channel:
-
-```text
-!test_alert in_stock
-!test_alert low_stock
-!test_alert out_of_stock
-```
-
-The test command waits 15 seconds before sending the embed, so you can leave the channel and verify notification behavior. It sends the same embed format as a real alert and does not update `last_status`.
-
-## Data and Persistence
-
-Default data locations:
-
-| Deployment | Watchlist Location |
-|---|---|
-| Docker | `/data/watchlist.json` in `stock-bot-data` volume |
-| Local development | `data/watchlist.json` |
-| systemd | `/var/lib/tracker-network-stock/watchlist.json` unless overridden |
-
-The watchlist file is written atomically through a temporary file and then replaced.
-
-## Project Structure
-
-```text
-tracker-network-stock/
-|-- bot.py                         # Discord bot entry point and commands
-|-- config.py                      # Environment loading and runtime configuration
-|-- monitor.py                     # Polling loop, state machine, and Discord alerts
-|-- scrapers.py                    # Retailer-specific stock scrapers
-|-- scripts/
-|   |-- docker_setup.sh            # Docker clone-to-run setup helper
-|   `-- triage_stock.py            # Scraper and alert-state triage tool
-|-- config/products/               # Product pack YAML files
-|-- Dockerfile                     # Production container image
-|-- docker-compose.yml             # Docker Compose service definition
-|-- setup_linux_service.sh         # systemd setup helper
-|-- stock-bot.service.example      # Example systemd unit
-|-- tracker-network-stock.env.example
-`-- requirements.txt
-```
-
-## Security Notes
-
-- Never commit `.env` or real Discord bot tokens.
-- Rotate any token that was pasted into chat, committed, or shared outside the deployment host.
-- Keep production secrets in `.env`, shell environment variables, or `/etc/tracker-network-stock/bot.env` for systemd.
-- The Docker container runs as non-root user `stockbot`.
-- `.gitignore` and `.dockerignore` exclude local env files, virtual environments, logs, and runtime data.
+## Known Limits
+
+- **Other retailers block plain HTTP clients.** From a residential connection, Amazon serves a
+  captcha, Best Buy resets the connection, and Newegg and B&H return 403 (tested 2026-11-07). A
+  server IP may fare differently. Blocked listings are flagged and back off automatically; UniFi
+  is unaffected.
+- **Early Access** shows up only on product pages, so EA detection relies on product polls of new
+  and hot items. It hasn't been observed live yet.
+- **Australia** and other unsupported regions are served the US store; the tracker rejects them.
 
 ## Troubleshooting
 
-Docker service status:
-
-```bash
-docker compose ps
-docker compose logs -f stock-bot
-```
-
-Container triage:
-
-```bash
-docker compose run --rm stock-bot python scripts/triage_stock.py
-```
-
-systemd status:
-
-```bash
-sudo systemctl status tracker-network-stock.service
-journalctl -u tracker-network-stock.service -n 100 --no-pager
-```
-
-Common failures:
-
-| Symptom | Likely Cause | Fix |
-|---|---|---|
-| Bot exits immediately | Missing or placeholder Discord token/channel | Check `.env` or systemd env file. |
-| No Ubiquiti status | Playwright Chromium missing or cannot launch | Docker: rebuild image. Local/systemd: run `playwright install --with-deps chromium`. |
-| No Discord alerts | Bot lacks channel permission or wrong channel ID | Reinvite bot or update `DISCORD_CHANNEL_ID`. |
-| Repeated `unknown` status | Retailer page changed, network block, or anti-bot response | Run triage and review scraper output/logs. |
-| `bad-setting` in systemd | Malformed unit file | Compare against [stock-bot.service.example](stock-bot.service.example). |
-
-## Maintenance
-
-- Prefer Docker for production deployments to avoid host Python and browser drift.
-- After code updates, run `docker compose up -d --build` and then triage.
-- Increase retailer intervals if rate limits or anti-bot pages appear.
-- Keep dependencies current in [requirements.txt](requirements.txt) and rebuild Docker after changes.
+| Symptom | Fix |
+|---|---|
+| "running headless" in logs | `DISCORD_BOT_TOKEN` missing or still `replace-me`. |
+| Alerts not posting | Check `DISCORD_CHANNEL_ID` and that the bot can view and send in that channel. |
+| Slash commands missing | Global sync can take up to an hour. Set `DISCORD_GUILD_ID` for instant sync. |
+| Duplicate old commands | Set `DISCORD_GUILD_ID`; startup clears stale global commands. |
+| `asked for the 'xx' store but got 'us'` | That region isn't a separate UniFi store. |
+| Retailer listing stuck on unknown | The site is blocking requests; see Known Limits. |

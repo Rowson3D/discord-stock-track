@@ -88,6 +88,10 @@ class EventSink(Protocol):
     async def publish(self, events: Sequence[RadarEvent]) -> None: ...
 
 
+class Dispatcher(Protocol):
+    async def dispatch(self) -> int: ...
+
+
 class LoggingSink:
     name = "log"
 

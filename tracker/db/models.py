@@ -150,6 +150,16 @@ class Event(Base):
     listing: Mapped[Listing | None] = relationship()
 
 
+class Meta(Base):
+    """Small key/value store for durable process state (e.g. completed baselines)."""
+
+    __tablename__ = "meta"
+
+    key: Mapped[str] = mapped_column(String(200), primary_key=True)
+    value: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
+
+
 class Watch(Base):
     """A Discord user wants alerts for a listing (or for everything when listing_id is NULL)."""
 
@@ -161,4 +171,6 @@ class Watch(Base):
     listing_id: Mapped[int | None] = mapped_column(
         ForeignKey("listings.id", ondelete="CASCADE"), index=True
     )
+    # Only ping when the listing's price is at or below this.
+    max_price_cents: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)

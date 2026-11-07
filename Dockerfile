@@ -1,25 +1,29 @@
-FROM python:3.12-slim-bookworm
+FROM python:3.13-slim-bookworm
+
+COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /bin/uv
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
-    STOCK_BOT_DATA_DIR=/data
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/app/.venv \
+    PATH="/app/.venv/bin:$PATH" \
+    TRACKER_DATA_DIR=/data
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN python -m pip install --upgrade pip \
-    && python -m pip install -r requirements.txt \
-    && python -m playwright install --with-deps chromium \
-    && rm -rf /var/lib/apt/lists/*
+# Dependencies first (cached unless the lockfile changes), then the project itself.
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --locked --no-dev --no-install-project
 
-COPY . .
+COPY tracker ./tracker
+COPY alembic.ini ./
+RUN uv sync --locked --no-dev
 
 RUN useradd --create-home --shell /usr/sbin/nologin stockbot \
     && mkdir -p /data \
-    && chown -R stockbot:stockbot /app /data /ms-playwright
+    && chown -R stockbot:stockbot /data
 
 USER stockbot
 
-CMD ["python", "bot.py"]
+CMD ["tracker", "run"]
