@@ -20,3 +20,11 @@ watchlist.json
 # OS/editor noise
 .DS_Store
 Thumbs.db
+
+# Tooling caches and local databases
+.pytest_cache/
+.ruff_cache/
+*.db
+*.db-wal
+*.db-shm
+logs/

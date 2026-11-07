@@ -4,6 +4,31 @@ Discord stock-alert bot for monitoring retailer product pages and posting stock 
 
 The bot currently supports Ubiquiti, Amazon, Best Buy, B&H Photo, and Newegg. Ubiquiti pages use Playwright Chromium because the store is JavaScript-rendered; other retailers use HTML scraping.
 
+> **Rebuild in progress.** The project is being rebuilt into a UniFi resale-intelligence platform
+> under [`tracker/`](tracker) — see [docs/ROADMAP.md](docs/ROADMAP.md). The legacy bot below keeps
+> running unchanged until the new one reaches parity (Phase 2).
+
+## New Platform (Developer Preview)
+
+Requires [uv](https://docs.astral.sh/uv/). The new UniFi source reads the store's embedded
+structured data over plain HTTP, with no browser. It crawls the full catalog (every variant, pack size,
+price, sold-out time, and restock ETA) in about 10 seconds.
+
+```bash
+uv sync                                   # create .venv and install dependencies
+uv run tracker unifi product u7-pro       # parse one product page
+uv run tracker unifi crawl                # crawl the whole store, show unavailable items
+uv run tracker unifi crawl --save         # store results in data/tracker.db, print radar events
+uv run tracker import-legacy              # migrate data/watchlist.json + subscribers.json
+uv run tracker db upgrade                 # apply database migrations
+uv run pytest                             # tests (parsers run against recorded store pages)
+uv run ruff check . && uv run ruff format --check .
+```
+
+Schema changes: edit `tracker/db/models.py`, then
+`uv run alembic revision --autogenerate -m "describe change"`. `tests/test_migrations.py` fails if
+models and migrations drift apart.
+
 ## Features
 
 - Polls configured products on per-retailer intervals.
