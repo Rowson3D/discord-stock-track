@@ -261,7 +261,8 @@ class MarketSettings(BaseSettings):
 
     min_comps: int = Field(default=3, ge=1)
     sold_window_days: int = Field(default=90, ge=7)
-    active_max_age_hours: float = Field(default=48, ge=1)
+    # eBay active-listing stats older than this are ignored (sold stats age by sold window).
+    active_max_age_hours: float = Field(default=96, ge=1)
 
     # Comp collection: one variant per tick per source; skip cheap accessories.
     collect_tick_seconds: float = Field(default=60, ge=5)

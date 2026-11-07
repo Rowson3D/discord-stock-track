@@ -19,6 +19,8 @@ from tracker.bot.embeds import KIND_STYLE, alert_content, alert_embed, source_na
 from tracker.bot.views import alert_view
 from tracker.db.models import MarketComp, Product, Valuation, Variant
 from tracker.domain import EventKind, Priority, SourceKey, StockStatus, format_cents
+from tracker.market.ebay import EbayItem
+from tracker.market.matching import MatchResult
 from tracker.outbox import RadarEvent, load_events
 from tracker.queries import (
     ListingRow,
@@ -99,6 +101,8 @@ def value_embed(
     valuation: Valuation | None,
     comps: list[MarketComp],
     settings: MarketSettings,
+    *,
+    live: list[tuple[EbayItem, MatchResult]] | None = None,
 ) -> discord.Embed:
     title = f"💰 {variant.sku}" + (f" · {product.name}" if product else "")
     embed = discord.Embed(title=title[:256], color=0xF1C40F)
@@ -148,7 +152,6 @@ def value_embed(
     if comps:
         lines = []
         for c in comps:
-            kind = "✅ sold" if c.sold else "🏷️ listed"
             ship = f" +{format_cents(c.shipping_cents)}" if c.shipping_cents else ""
             qty = f" ×{c.quantity}" if c.quantity > 1 else ""
             label = (
@@ -157,8 +160,23 @@ def value_embed(
                 else format_cents(c.price_cents)
             )
             when = (c.sold_at or c.observed_at).strftime("%b %d")
-            lines.append(f"{kind} {label}{ship}{qty} · {c.condition} · {c.source} · {when}")
-        embed.add_field(name="Recent comps", value="\n".join(lines)[:1024], inline=False)
+            note = f" · {c.note[:40]}" if c.note else ""
+            lines.append(f"✍️ {label}{ship}{qty} · {c.condition} · {when}{note}")
+        embed.add_field(name="Manual comps", value="\n".join(lines)[:1024], inline=False)
+    if live:
+        lines = []
+        for item, match in live[:10]:
+            kind = "✅ sold" if item.sold else "🏷️ listed"
+            label = (
+                f"[{format_cents(item.price_cents)}]({item.url})"
+                if item.url
+                else (format_cents(item.price_cents))
+            )
+            verdict = f"×{match.quantity}" if match.matched else f"❌ {match.reason}"
+            lines.append(f"{kind} {label} · {verdict}")
+        embed.add_field(
+            name="Live eBay sample (not stored)", value="\n".join(lines)[:1024], inline=False
+        )
     return embed
 
 
@@ -538,13 +556,16 @@ class TrackerCommands(commands.Cog):
         if variant is None:
             await interaction.followup.send(f"⚠️ No product matches `{product}`.", ephemeral=True)
             return
+        live = None
         if refresh and self.ctx.market.collecting:
-            await self.ctx.market.collect(variant.id)
+            live = (await self.ctx.market.collect(variant.id)).items
         async with self.ctx.sessions() as session:
             valuation = await session.get(Valuation, variant.id)
             comps = await variant_comps(session, variant.id, limit=8)
             product_row = await session.get(Product, variant.product_id)
-        embed = value_embed(variant, product_row, valuation, comps, self.ctx.settings.market)
+        embed = value_embed(
+            variant, product_row, valuation, comps, self.ctx.settings.market, live=live
+        )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(description="[admin] Record a resale comp (your sale or one you saw)")

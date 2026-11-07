@@ -280,9 +280,18 @@ full-catalog tracking plus `/priority`.
   Verified live against the real catalog with manual test comps; the profit math was checked by
   hand.
 
-**Not verified:** the eBay client against real credentials (built from eBay's API docs and tested
-against synthetic responses; fixtures in `tests/fixtures/ebay/` should be replaced with recorded
-responses).
+**2026-11-07: eBay compliance change.** The eBay keyset is exempted from Marketplace Account
+Deletion with "I do not persist eBay data", so the tracker no longer stores eBay listings. Results
+are matched in memory, and only aggregate stats are kept (`ebay_stats`: counts, median and
+percentile prices, matched/excluded counts). Migration 0006 purges any non-manual
+`market_comps` rows. Valuation is now two-stage (`summarize` → `compute_valuation`), with basis
+priority eBay sold > manual sold > eBay active. Active stats expire after 96h. Listing-level
+detail is shown live only (`tracker market collect`, `/value refresh`).
+
+**Verified live with production keys:** the Browse API works (100 results for U7-Pro: 24 matched,
+65 correctly rejected as sibling models). Marketplace Insights is refused (token scope HTTP 400),
+so collection runs active-only. Insight: at retail ($189), U7-Pro's eBay active market (25th
+percentile $226.84) nets about −$5 after fees and shipping, so not a flip at MSRP.
 
 **Next: Phase 4 (web dashboard).**
 

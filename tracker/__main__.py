@@ -14,7 +14,7 @@ from typing import Any
 
 from tracker.app import run_tracker
 from tracker.db.migrate import upgrade_async
-from tracker.db.models import Valuation, Variant
+from tracker.db.models import EbayStats, Valuation, Variant
 from tracker.db.session import create_engine, create_sessionmaker
 from tracker.domain import ListingSnapshot, format_cents
 from tracker.http import HttpClient
@@ -211,13 +211,19 @@ async def cmd_market_value(settings: Settings, args: argparse.Namespace) -> int:
         result = (await market.revalue([variant.id])).get(variant.id)
         _print_valuation(variant.sku, result)
         async with sessions() as session:
-            for comp in await variant_comps(session, variant.id, include_excluded=args.all):
-                flag = f" [excluded: {comp.excluded_reason}]" if comp.excluded_reason else ""
-                kind = "sold  " if comp.sold else "listed"
-                print(
-                    f"  {kind} {format_cents(comp.price_cents):>10} x{comp.quantity} "
-                    f"{comp.condition:<9} {comp.source:<11} {comp.title[:60]}{flag}"
-                )
+            stats = await session.get(EbayStats, variant.id)
+            comps = await variant_comps(session, variant.id)
+        if stats is not None:
+            print(
+                f"  eBay (aggregates from {stats.fetched_at:%Y-%m-%d %H:%M} UTC): "
+                f"{stats.matched} matched, {stats.excluded} excluded. "
+                "Listings aren't stored; run `tracker market collect` to see them live."
+            )
+        for comp in comps:
+            print(
+                f"  manual {format_cents(comp.price_cents):>10} x{comp.quantity} "
+                f"{comp.condition:<9} {comp.sold_at:%Y-%m-%d} {comp.note or ''}"
+            )
     return 0
 
 
@@ -232,8 +238,12 @@ async def cmd_market_collect(settings: Settings, args: argparse.Namespace) -> in
         report = await market.collect(variant.id)
         print(
             f"{variant.sku}: query {report.query!r} → {report.fetched} results, "
-            f"{report.matched} matched, {report.excluded} excluded"
+            f"{report.matched} matched, {report.excluded} excluded (shown live, not stored)"
         )
+        for item, match in report.items:
+            kind = "sold  " if item.sold else "listed"
+            verdict = f"ok x{match.quantity}" if match.matched else f"excluded: {match.reason}"
+            print(f"  {kind} {format_cents(item.price_cents):>10}  {verdict:<34} {item.title[:70]}")
         _print_valuation(variant.sku, report.valuation)
     return 0
 
@@ -328,7 +338,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     value = market.add_parser("value", help="show a product's valuation and comps")
     value.add_argument("sku")
-    value.add_argument("--all", action="store_true", help="include excluded comps")
     value.set_defaults(handler=cmd_market_value)
     collect = market.add_parser("collect", help="fetch eBay comps for a product now")
     collect.add_argument("sku")

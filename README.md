@@ -117,11 +117,17 @@ Valuations work with manual comps alone (`/comp`), but eBay makes them automatic
 1. Create a free account at https://developer.ebay.com and create an application keyset.
 2. Use the **Production** keyset: Sandbox only has fake test listings.
 3. eBay disables production keysets until you deal with **Marketplace Account Deletion
-   notifications**. This tracker uses application tokens only and stores listing data
-   (item IDs, titles, prices), never eBay user or account data. So choose **"exempt"** on the
-   keyset's account-deletion page instead of running a notification endpoint. If the form's
-   reasons don't fit, or the keyset stays disabled, contact eBay developer support.
-4. Put the production App ID and Cert ID in `.env`:
+   notifications**. On the keyset's *Alerts & Notifications* page, turn on **Exempted from
+   Marketplace Account Deletion** and choose **"I do not persist eBay data"**. That's accurate
+   for this tracker: it uses application tokens only, matches eBay results in memory, and stores
+   only aggregate numbers per product (counts, median and percentile prices). It never stores
+   listing IDs, titles, URLs, individual prices, or any user data. A database migration also
+   purges any eBay rows. Suggested *Additional information*: "Personal, non-commercial
+   price-tracking tool. Uses only application (client credentials) tokens with the Browse and
+   Marketplace Insights APIs. No eBay user or account data is collected. Listing results are
+   processed in memory to compute aggregate price statistics and are not stored."
+4. Put the production **App ID** and **Cert ID** in `.env` (never in the tracked
+   `.env.example`). The Dev ID isn't needed.
 
 ```dotenv
 EBAY_CLIENT_ID=YourApp-PRD-xxxxxxxx-xxxxxxxx      # "App ID (Client ID)"
@@ -220,10 +226,14 @@ tracker/
 - **Early Access** shows up only on product pages, so EA detection relies on product polls of new
   and hot items. It hasn't been observed live yet.
 - **Australia** and other unsupported regions are served the US store; the tracker rejects them.
-- **eBay sold prices** need Marketplace Insights approval. Without it, valuations rely on active
-  asking prices (25th percentile), which are rougher, and on manual comps. The eBay client is
-  built from eBay's documented API and tested against synthetic responses; it hasn't been run
-  against real credentials yet.
+- **eBay sold prices** need Marketplace Insights approval. Without it, eBay refuses the token
+  scope (HTTP 400) and the tracker logs it once and values items from active asking prices (25th
+  percentile), which are rougher, plus manual comps. Verified live 2026-11-07: Browse search for
+  U7-Pro returned 100 results; 24 matched, and 65 were correctly rejected as other models (XG, XGS,
+  Wall, Max, Outdoor, black variants).
+- **eBay listings are never stored**, so individual comps can't be reviewed later. Use
+  `tracker market collect <sku>` or `/value <sku> refresh:true` to see the live listings and why
+  each was matched or rejected.
 
 ## Troubleshooting
 

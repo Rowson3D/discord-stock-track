@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tests.conftest import FIXTURES, T0, make_snapshot
-from tracker.db.models import Event, Listing, MarketComp, Valuation, Variant, Watch
+from tracker.db.models import EbayStats, Event, Listing, MarketComp, Valuation, Variant, Watch
 from tracker.domain import EventKind, StockStatus
 from tracker.ingest import Ingestor
 from tracker.market.ebay import EbayClient, EbayError, EbayItem, parse_active, parse_sold
@@ -165,12 +165,18 @@ async def test_collect_matches_stores_and_values(catalog):
     assert report.fetched == 8
     assert report.matched == 6  # 4 active (incl. a lot of 2) + 2 sold
     assert report.excluded == 2  # U7 Pro Max, for-parts
+    # Exclusion reasons are visible on the live report...
+    reasons = {m.reason for _, m in report.items if not m.matched}
+    assert reasons == {"different model (u7-pro-max)", "parts or not working"}
+    lot = next(m for _, m in report.items if m.quantity == 2)
+    assert lot.condition == "open_box"
+
     async with catalog() as session:
-        comps = (await session.scalars(select(MarketComp))).all()
-        excluded = {c.title: c.excluded_reason for c in comps if c.excluded_reason}
-        assert set(excluded.values()) == {"different model (u7-pro-max)", "parts or not working"}
-        lot = next(c for c in comps if c.quantity == 2)
-        assert lot.condition == "open_box"
+        # ...but no eBay listing data is ever written (eBay "do not persist" compliance).
+        assert (await session.scalars(select(MarketComp))).all() == []
+        stats = await session.get(EbayStats, vid)
+        assert (stats.matched, stats.excluded, stats.active_count) == (6, 2, 4)
+        assert stats.fetched_at == now
         valuation = await session.get(Valuation, vid)
         variant = await session.get(Variant, vid)
         assert variant.comps_checked_at == now
@@ -182,14 +188,46 @@ async def test_collect_matches_stores_and_values(catalog):
     assert valuation.net_cents is not None
 
 
-async def test_collect_twice_updates_rather_than_duplicates(catalog):
+async def test_collect_twice_keeps_one_aggregate_row(catalog):
     ebay = FakeEbay(parse_active(_json("browse_u7_pro.json")), [])
     service = _service(catalog, ebay)
     vid = await _variant_id(catalog, "U7-Pro")
     await service.collect(vid)
     await service.collect(vid)
     async with catalog() as session:
-        assert len((await session.scalars(select(MarketComp))).all()) == 5
+        assert len((await session.scalars(select(EbayStats))).all()) == 1
+        assert (await session.scalars(select(MarketComp))).all() == []
+
+
+async def test_stale_active_stats_are_ignored(catalog):
+    ebay = FakeEbay(parse_active(_json("browse_u7_pro.json")), [])
+    vid = await _variant_id(catalog, "U7-Pro")
+    await _service(catalog, ebay, lambda: T0).collect(vid)
+
+    fresh = (await _service(catalog, None, lambda: T0 + timedelta(hours=95)).revalue([vid]))[vid]
+    assert fresh.basis == "active"
+    stale = (await _service(catalog, None, lambda: T0 + timedelta(hours=97)).revalue([vid]))[vid]
+    assert stale.basis is None
+
+
+async def test_ebay_sold_beats_manual_and_manual_beats_active(catalog):
+    sold = [
+        EbayItem(f"s{i}", "Ubiquiti U7 Pro new", None, p, 0, "USD", "1000", True, T0)
+        for i, p in enumerate((30000, 30500, 31000))
+    ]
+    vid = await _variant_id(catalog, "U7-Pro")
+    service = _service(catalog, FakeEbay(parse_active(_json("browse_u7_pro.json")), []))
+    await service.collect(vid)
+    for price in (26000, 26500, 27000):
+        await service.add_manual_comp(vid, price)
+    assert (await service.revalue([vid]))[vid].basis == "manual"  # manual sold > eBay active
+
+    service = _service(catalog, FakeEbay([], sold))
+    await service.collect(vid)
+    result = (await service.revalue([vid]))[vid]
+    assert result.basis == "sold"
+    assert result.resale_cents == 30500
+    assert result.manual_count == 3
 
 
 async def test_manual_comps_create_deal_event_once(catalog):

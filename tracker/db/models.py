@@ -154,7 +154,11 @@ class Event(Base):
 
 
 class MarketComp(Base):
-    """One resale data point (an eBay sold/active listing or a manual entry) for a variant."""
+    """A manual resale data point (e.g. your own sale) for a variant.
+
+    eBay listings are never stored here: they're summarized in memory into `EbayStats`
+    (the eBay app declares it does not persist eBay data).
+    """
 
     __tablename__ = "market_comps"
     __table_args__ = (UniqueConstraint("source", "external_id"),)
@@ -179,6 +183,29 @@ class MarketComp(Base):
     excluded_reason: Mapped[str | None] = mapped_column(String(100))
     note: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[str | None] = mapped_column(String(32))
+
+
+class EbayStats(Base):
+    """Aggregate eBay prices per variant from the latest fetch. No listing-level data."""
+
+    __tablename__ = "ebay_stats"
+
+    variant_id: Mapped[int] = mapped_column(
+        ForeignKey("variants.id", ondelete="CASCADE"), primary_key=True
+    )
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    sold_count: Mapped[int] = mapped_column(Integer, default=0)
+    sold_30d: Mapped[int] = mapped_column(Integer, default=0)
+    sold_median_cents: Mapped[int | None] = mapped_column(Integer)
+    sold_p25_cents: Mapped[int | None] = mapped_column(Integer)
+    sold_p75_cents: Mapped[int | None] = mapped_column(Integer)
+    active_count: Mapped[int] = mapped_column(Integer, default=0)
+    active_median_cents: Mapped[int | None] = mapped_column(Integer)
+    active_p25_cents: Mapped[int | None] = mapped_column(Integer)
+    active_low_cents: Mapped[int | None] = mapped_column(Integer)
+    # How many fetched results matched this variant vs. were rejected (counts only).
+    matched: Mapped[int] = mapped_column(Integer, default=0)
+    excluded: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class Valuation(Base):

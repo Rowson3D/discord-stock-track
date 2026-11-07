@@ -281,14 +281,13 @@ async def opportunities(
 
 
 async def variant_comps(
-    session: AsyncSession, variant_id: int, *, include_excluded: bool = False, limit: int = 15
+    session: AsyncSession, variant_id: int, *, limit: int = 15
 ) -> list[MarketComp]:
+    """Manual comps for a variant (eBay listings are never stored)."""
     stmt = (
         select(MarketComp)
-        .where(MarketComp.variant_id == variant_id)
-        .order_by(MarketComp.sold.desc(), MarketComp.observed_at.desc())
+        .where(MarketComp.variant_id == variant_id, MarketComp.source == "manual")
+        .order_by(MarketComp.sold_at.desc(), MarketComp.id.desc())
         .limit(limit)
     )
-    if not include_excluded:
-        stmt = stmt.where(MarketComp.excluded_reason.is_(None))
     return list(await session.scalars(stmt))

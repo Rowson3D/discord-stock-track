@@ -1,5 +1,9 @@
 """Collect resale comps, value variants, and raise `deal` events.
 
+eBay compliance: the eBay app declares "I do not persist eBay data". eBay results are matched
+and summarized in memory; only aggregate numbers (`EbayStats`) are stored. Manual comps are
+the user's own data and are stored as-is.
+
 Collection is rate-conscious (eBay's default Browse quota is 5,000 calls/day): one variant
 per tick, hot variants refreshed every few hours and everything else every few days, and
 cheap accessories skipped unless someone watches them.
@@ -10,23 +14,49 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from tracker.db.models import Event, Listing, MarketComp, Valuation, Variant, Watch
+from tracker.db.models import (
+    EbayStats,
+    Event,
+    Listing,
+    MarketComp,
+    Valuation,
+    Variant,
+    Watch,
+)
 from tracker.domain import EventKind, Priority, StockStatus, format_cents
 from tracker.market.ebay import EbayClient, EbayError, EbayItem
 from tracker.market.matching import MatchResult, VariantMatcher, base_sku
-from tracker.market.valuation import Comp, ValuationResult, compute_valuation, is_deal
+from tracker.market.valuation import (
+    Comp,
+    MarketStats,
+    ValuationResult,
+    compute_valuation,
+    is_deal,
+    summarize,
+)
 from tracker.outbox import Dispatcher
 from tracker.settings import MarketSettings
 
 logger = logging.getLogger(__name__)
 
-SOURCE_SOLD, SOURCE_ACTIVE, SOURCE_MANUAL = "ebay_sold", "ebay_active", "manual"
+SOURCE_MANUAL = "manual"
+STAT_FIELDS = (
+    "sold_count",
+    "sold_30d",
+    "sold_median_cents",
+    "sold_p25_cents",
+    "sold_p75_cents",
+    "active_count",
+    "active_median_cents",
+    "active_p25_cents",
+    "active_low_cents",
+)
 
 
 @dataclass(slots=True)
@@ -38,6 +68,8 @@ class CollectReport:
     matched: int = 0
     excluded: int = 0
     valuation: ValuationResult | None = None
+    # Live results for display only; never persisted.
+    items: list[tuple[EbayItem, MatchResult]] = field(default_factory=list)
 
 
 def search_query(sku: str, pack_size: int) -> str:
@@ -160,6 +192,11 @@ class MarketService:
         return collected
 
     async def collect(self, variant_id: int) -> CollectReport:
+        """Fetch eBay results, match them in memory, and store only aggregate stats.
+
+        Listing-level eBay data (IDs, titles, URLs, individual prices) is never written to the
+        database; it's returned on the report for live display and then discarded.
+        """
         if self._ebay is None:
             raise EbayError("eBay is not configured (EBAY_CLIENT_ID / EBAY_CLIENT_SECRET)")
         now = self._clock()
@@ -179,23 +216,47 @@ class MarketService:
 
         report = CollectReport(variant_id, sku, query, fetched=len(active) + len(sold))
         matcher = VariantMatcher(sku, pack, catalog)
+        comps: list[Comp] = []
+        for item in [*active, *sold]:
+            result = matcher.match(item.title, item.condition_id)
+            if result.reason == "sku not in title":
+                continue  # Search noise.
+            report.items.append((item, result))
+            if not result.matched:
+                report.excluded += 1
+                continue
+            report.matched += 1
+            comps.append(
+                Comp(
+                    source="ebay_sold" if item.sold else "ebay_active",
+                    price_cents=item.price_cents,
+                    shipping_cents=item.shipping_cents,
+                    quantity=result.quantity,
+                    condition=result.condition or "unknown",
+                    sold=item.sold,
+                    sold_at=item.sold_at,
+                    observed_at=now,
+                    match_score=result.score,
+                )
+            )
+        stats = summarize(comps, retail_cents, self._settings, now)
+
         async with self._sessions() as session, session.begin():
-            for item in [*active, *sold]:
-                result = matcher.match(item.title, item.condition_id)
-                if result.reason == "sku not in title":
-                    continue  # Search noise, not worth storing.
-                await self._upsert_comp(session, variant_id, item, result, now)
-                if result.matched:
-                    report.matched += 1
-                else:
-                    report.excluded += 1
+            row = await session.get(EbayStats, variant_id)
+            if row is None:
+                row = EbayStats(variant_id=variant_id)
+                session.add(row)
+            row.fetched_at = now
+            for name in STAT_FIELDS:
+                setattr(row, name, getattr(stats, name))
+            row.matched, row.excluded = report.matched, report.excluded
             stored = await session.get(Variant, variant_id)
             assert stored is not None
             stored.comps_checked_at = now
 
         report.valuation = (await self.revalue([variant_id])).get(variant_id)
         logger.info(
-            "Comps for %s (%r): %d fetched, %d matched, %d excluded",
+            "eBay comps for %s (%r): %d fetched, %d matched, %d excluded",
             sku,
             query,
             report.fetched,
@@ -203,37 +264,6 @@ class MarketService:
             report.excluded,
         )
         return report
-
-    @staticmethod
-    async def _upsert_comp(
-        session: AsyncSession,
-        variant_id: int,
-        item: EbayItem,
-        result: MatchResult,
-        now: datetime,
-    ) -> None:
-        source = SOURCE_SOLD if item.sold else SOURCE_ACTIVE
-        comp = await session.scalar(
-            select(MarketComp).where(
-                MarketComp.source == source, MarketComp.external_id == item.item_id
-            )
-        )
-        if comp is None:
-            comp = MarketComp(source=source, external_id=item.item_id, variant_id=variant_id)
-            session.add(comp)
-        comp.variant_id = variant_id
-        comp.title = item.title
-        comp.url = item.url
-        comp.price_cents = item.price_cents
-        comp.shipping_cents = item.shipping_cents
-        comp.currency = item.currency
-        comp.condition = result.condition or "unknown"
-        comp.quantity = result.quantity
-        comp.sold = item.sold
-        comp.sold_at = item.sold_at
-        comp.observed_at = now
-        comp.match_score = result.score
-        comp.excluded_reason = None if result.matched else result.reason
 
     async def add_manual_comp(
         self,
@@ -275,35 +305,51 @@ class MarketService:
     # ── valuation ─────────────────────────────────────────────────────────
 
     async def revalue(self, variant_ids: Sequence[int] | None = None) -> dict[int, ValuationResult]:
-        """Recompute valuations (all variants with comps when None). Emits `deal` events."""
+        """Recompute valuations from stored eBay stats + manual comps. Emits `deal` events.
+
+        With `variant_ids=None`, every variant that has eBay stats or manual comps is valued.
+        """
         now = self._clock()
+        active_cutoff = now - timedelta(hours=self._settings.active_max_age_hours)
         results: dict[int, ValuationResult] = {}
         events = 0
         async with self._sessions() as session, session.begin():
-            stmt = select(MarketComp).where(MarketComp.excluded_reason.is_(None))
+            manual_stmt = select(MarketComp).where(MarketComp.source == SOURCE_MANUAL)
+            stats_stmt = select(EbayStats)
             if variant_ids is not None:
-                stmt = stmt.where(MarketComp.variant_id.in_(list(variant_ids)))
-            by_variant: dict[int, list[Comp]] = {}
-            for row in await session.scalars(stmt):
-                by_variant.setdefault(row.variant_id, []).append(
+                manual_stmt = manual_stmt.where(MarketComp.variant_id.in_(list(variant_ids)))
+                stats_stmt = stats_stmt.where(EbayStats.variant_id.in_(list(variant_ids)))
+            manual: dict[int, list[Comp]] = {}
+            for row in await session.scalars(manual_stmt):
+                manual.setdefault(row.variant_id, []).append(
                     Comp(
                         source=row.source,
                         price_cents=row.price_cents,
                         shipping_cents=row.shipping_cents,
                         quantity=row.quantity,
                         condition=row.condition,
-                        sold=row.sold,
+                        sold=True,
                         sold_at=row.sold_at,
                         observed_at=row.observed_at,
-                        match_score=row.match_score,
                     )
                 )
-            for variant_id in variant_ids if variant_ids is not None else list(by_variant):
-                comps = by_variant.get(variant_id, [])
+            ebay: dict[int, MarketStats] = {}
+            for row in await session.scalars(stats_stmt):
+                stats = MarketStats(**{name: getattr(row, name) for name in STAT_FIELDS})
+                ebay[row.variant_id] = (
+                    stats if row.fetched_at >= active_cutoff else stats.without_active()
+                )
+
+            targets = list(variant_ids) if variant_ids is not None else sorted({*manual, *ebay})
+            for variant_id in targets:
                 listing = await retail_listing(session, variant_id)
+                retail_cents = listing.price_cents if listing else None
                 available = bool(listing and StockStatus(listing.status).is_available)
+                manual_stats = summarize(
+                    manual.get(variant_id, []), retail_cents, self._settings, now
+                )
                 result = compute_valuation(
-                    listing.price_cents if listing else None, comps, self._settings, now
+                    retail_cents, ebay.get(variant_id), manual_stats, self._settings
                 )
                 results[variant_id] = result
                 events += await self._store(session, variant_id, listing, available, result, now)

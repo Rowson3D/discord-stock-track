@@ -14,11 +14,11 @@ from tracker.market.matching import (
 )
 from tracker.market.valuation import (
     Comp,
-    compute_valuation,
     drop_outliers,
     is_deal,
     opportunity_score,
     percentile,
+    value_from_comps,
 )
 from tracker.settings import MarketSettings
 
@@ -154,7 +154,7 @@ def active(price: int, hours_ago: float = 1, **kw: object) -> Comp:
 
 def test_profit_math_from_sold_comps():
     comps = [sold(p) for p in (26000, 27000, 28000, 29000, 30000, 31000, 32000, 33000)]
-    result = compute_valuation(18900, comps, SETTINGS, T0)
+    result = value_from_comps(18900, comps, SETTINGS, T0)
     assert result.basis == "sold"
     assert result.resale_cents == 29500
     assert result.fees_cents == round(29500 * 0.136) + 40  # 4052
@@ -169,7 +169,7 @@ def test_profit_math_from_sold_comps():
 
 def test_active_listings_basis_uses_lower_quartile():
     comps = [active(p) for p in (30000, 32000, 34000, 36000)]
-    result = compute_valuation(18900, comps, SETTINGS, T0)
+    result = value_from_comps(18900, comps, SETTINGS, T0)
     assert result.basis == "active"
     assert result.resale_cents == percentile([30000, 32000, 34000, 36000], 0.25)
     assert result.confidence == "low"
@@ -184,16 +184,14 @@ def test_filters_conditions_age_outliers_and_lots():
         sold(30000, days_ago=200),  # outside the sold window
         sold(500),  # implausibly cheap vs retail: likely an accessory
         sold(90000, quantity=3),  # lot: $300/unit, counts
-        active(31000, hours_ago=100),  # stale active listing
     ]
-    result = compute_valuation(18900, comps, SETTINGS, T0)
+    result = value_from_comps(18900, comps, SETTINGS, T0)
     assert result.sold_count == 4
-    assert result.active_count == 0
     assert result.resale_cents == 30000
 
 
 def test_not_enough_comps_means_no_valuation():
-    result = compute_valuation(18900, [sold(30000), sold(31000)], SETTINGS, T0)
+    result = value_from_comps(18900, [sold(30000), sold(31000)], SETTINGS, T0)
     assert result.basis is None
     assert result.net_cents is None
     assert result.score == 0
@@ -203,7 +201,7 @@ def test_not_enough_comps_means_no_valuation():
 def test_manual_basis_and_tax():
     settings = MarketSettings(_env_file=None, purchase_tax_rate=0.08)  # type: ignore[call-arg]
     comps = [sold(p, source="manual") for p in (25000, 26000, 27000)]
-    result = compute_valuation(20000, comps, settings, T0)
+    result = value_from_comps(20000, comps, settings, T0)
     assert result.basis == "manual"
     assert result.cost_cents == 21600
     assert result.manual_count == 3
@@ -211,10 +209,10 @@ def test_manual_basis_and_tax():
 
 def test_deal_threshold():
     comps = [sold(p) for p in (30000, 31000, 32000)]
-    good = compute_valuation(18900, comps, SETTINGS, T0)
+    good = value_from_comps(18900, comps, SETTINGS, T0)
     assert is_deal(good, available=True, settings=SETTINGS)
     assert not is_deal(good, available=False, settings=SETTINGS)
-    thin = compute_valuation(25000, comps, SETTINGS, T0)
+    thin = value_from_comps(25000, comps, SETTINGS, T0)
     assert not is_deal(thin, available=True, settings=SETTINGS)
 
 

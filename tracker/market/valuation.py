@@ -1,4 +1,12 @@
-"""Pure resale math: comps + retail price + fee model → valuation and opportunity score.
+"""Pure resale math: comps → market stats → valuation and opportunity score.
+
+Two stages, because eBay listings are never stored (eBay API compliance: the app declares it
+does not persist eBay data):
+
+1. `summarize()` turns comps into aggregate `MarketStats`. eBay results are summarized in
+   memory right after fetching and only the stats are kept. Manual comps (your own data) are
+   stored and summarized on demand.
+2. `compute_valuation()` combines stats with the current retail price:
 
     gross  = resale per unit (price + buyer-paid shipping)
     fees   = gross × fee_rate + fixed fee
@@ -6,9 +14,8 @@
     net    = gross − fees − outbound shipping − cost
     ROI    = net / cost
 
-Resale basis: the median of recent *sold* comps (eBay sold or manual) when there are enough;
-otherwise the 25th percentile of fresh *active* listings (you'd have to undercut asking
-prices to sell quickly), otherwise nothing.
+Resale basis, in order: eBay sold median, manual sold median, eBay active 25th percentile
+(you'd have to undercut asking prices to sell quickly). Each needs `min_comps` data points.
 """
 
 from __future__ import annotations
@@ -40,6 +47,33 @@ class Comp:
     @property
     def unit_cents(self) -> int:
         return (self.price_cents + (self.shipping_cents or 0)) // max(1, self.quantity)
+
+
+@dataclass(frozen=True, slots=True)
+class MarketStats:
+    """Aggregate per-unit prices. Contains no listing-level data."""
+
+    sold_count: int = 0
+    sold_30d: int = 0
+    sold_median_cents: int | None = None
+    sold_p25_cents: int | None = None
+    sold_p75_cents: int | None = None
+    active_count: int = 0
+    active_median_cents: int | None = None
+    active_p25_cents: int | None = None
+    active_low_cents: int | None = None
+
+    def without_active(self) -> MarketStats:
+        return MarketStats(
+            sold_count=self.sold_count,
+            sold_30d=self.sold_30d,
+            sold_median_cents=self.sold_median_cents,
+            sold_p25_cents=self.sold_p25_cents,
+            sold_p75_cents=self.sold_p75_cents,
+        )
+
+
+EMPTY = MarketStats()
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +120,30 @@ def drop_outliers(values: list[int], retail_cents: int | None) -> list[int]:
     return values
 
 
+def summarize(
+    comps: Sequence[Comp], retail_cents: int | None, settings: MarketSettings, now: datetime
+) -> MarketStats:
+    usable = [c for c in comps if c.condition in RESALE_CONDITIONS and c.match_score >= 0.5]
+    sold_cutoff = now - timedelta(days=settings.sold_window_days)
+    sold = [c for c in usable if c.sold and (c.sold_at or c.observed_at) >= sold_cutoff]
+    active = [c for c in usable if not c.sold]
+    month = now - timedelta(days=30)
+
+    sold_units = drop_outliers([c.unit_cents for c in sold], retail_cents)
+    active_units = drop_outliers([c.unit_cents for c in active], retail_cents)
+    return MarketStats(
+        sold_count=len(sold_units),
+        sold_30d=sum(1 for c in sold if (c.sold_at or c.observed_at) >= month),
+        sold_median_cents=percentile(sold_units, 0.5),
+        sold_p25_cents=percentile(sold_units, 0.25),
+        sold_p75_cents=percentile(sold_units, 0.75),
+        active_count=len(active_units),
+        active_median_cents=percentile(active_units, 0.5),
+        active_p25_cents=percentile(active_units, 0.25),
+        active_low_cents=min(active_units) if active_units else None,
+    )
+
+
 def confidence_for(sold: int, active: int, min_comps: int) -> str:
     if sold >= max(8, min_comps):
         return "high"
@@ -110,29 +168,24 @@ def opportunity_score(
 
 def compute_valuation(
     retail_cents: int | None,
-    comps: Sequence[Comp],
+    ebay: MarketStats | None,
+    manual: MarketStats | None,
     settings: MarketSettings,
-    now: datetime,
 ) -> ValuationResult:
-    usable = [c for c in comps if c.condition in RESALE_CONDITIONS and c.match_score >= 0.5]
-    sold_cutoff = now - timedelta(days=settings.sold_window_days)
-    sold = [c for c in usable if c.sold and (c.sold_at or c.observed_at) >= sold_cutoff]
-    month = now - timedelta(days=30)
-    active_cutoff = now - timedelta(hours=settings.active_max_age_hours)
-    active = [c for c in usable if not c.sold and c.observed_at >= active_cutoff]
-
-    sold_units = drop_outliers([c.unit_cents for c in sold], retail_cents)
-    active_units = drop_outliers([c.unit_cents for c in active], retail_cents)
-    sold_30d = sum(1 for c in sold if (c.sold_at or c.observed_at) >= month)
-    manual_count = sum(1 for c in sold if c.source == "manual")
+    ebay, manual = ebay or EMPTY, manual or EMPTY
+    minimum = settings.min_comps
 
     basis: str | None = None
     resale: int | None = None
-    if len(sold_units) >= settings.min_comps:
-        basis = "manual" if manual_count == len(sold) else "sold"
-        resale = percentile(sold_units, 0.5)
-    elif len(active_units) >= settings.min_comps:
-        basis, resale = "active", percentile(active_units, 0.25)
+    sold_view = ebay  # Which sold stats to report.
+    if ebay.sold_count >= minimum:
+        basis, resale = "sold", ebay.sold_median_cents
+    elif manual.sold_count >= minimum:
+        basis, resale, sold_view = "manual", manual.sold_median_cents, manual
+    elif ebay.active_count >= minimum:
+        basis, resale = "active", ebay.active_p25_cents
+    elif manual.sold_count:
+        sold_view = manual
 
     fees = shipping = cost = net = None
     roi = None
@@ -145,10 +198,13 @@ def compute_valuation(
         roi = round(net / cost, 4) if cost else None
 
     sell_through = None
-    if sold_30d or (sold and active):
-        sell_through = round(sold_30d / (sold_30d + len(active_units)), 3) if sold_30d else 0.0
+    if ebay.sold_30d or (ebay.sold_count and ebay.active_count):
+        total = ebay.sold_30d + ebay.active_count
+        sell_through = round(ebay.sold_30d / total, 3) if total else None
 
-    confidence = confidence_for(len(sold_units), len(active_units), settings.min_comps)
+    confidence = (
+        confidence_for(sold_view.sold_count, ebay.active_count, minimum) if basis else "none"
+    )
     return ValuationResult(
         retail_cents=retail_cents,
         basis=basis,
@@ -158,18 +214,32 @@ def compute_valuation(
         cost_cents=cost,
         net_cents=net,
         roi=roi,
-        sold_count=len(sold_units),
-        sold_30d=sold_30d,
-        active_count=len(active_units),
-        manual_count=manual_count,
-        sold_median_cents=percentile(sold_units, 0.5),
-        sold_p25_cents=percentile(sold_units, 0.25),
-        sold_p75_cents=percentile(sold_units, 0.75),
-        active_median_cents=percentile(active_units, 0.5),
-        active_low_cents=min(active_units) if active_units else None,
+        sold_count=sold_view.sold_count,
+        sold_30d=sold_view.sold_30d,
+        active_count=ebay.active_count,
+        manual_count=manual.sold_count,
+        sold_median_cents=sold_view.sold_median_cents,
+        sold_p25_cents=sold_view.sold_p25_cents,
+        sold_p75_cents=sold_view.sold_p75_cents,
+        active_median_cents=ebay.active_median_cents,
+        active_low_cents=ebay.active_low_cents,
         sell_through=sell_through,
-        confidence=confidence if basis else "none",
-        score=opportunity_score(net, roi, confidence if basis else "none", sell_through),
+        confidence=confidence,
+        score=opportunity_score(net, roi, confidence, sell_through),
+    )
+
+
+def value_from_comps(
+    retail_cents: int | None, comps: Sequence[Comp], settings: MarketSettings, now: datetime
+) -> ValuationResult:
+    """Convenience: split comps by source, summarize each, and value them."""
+    manual = [c for c in comps if c.source == "manual"]
+    ebay = [c for c in comps if c.source != "manual"]
+    return compute_valuation(
+        retail_cents,
+        summarize(ebay, retail_cents, settings, now),
+        summarize(manual, retail_cents, settings, now),
+        settings,
     )
 
 
