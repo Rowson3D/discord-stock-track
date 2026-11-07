@@ -8,6 +8,8 @@ products, and that gets better at predicting profit the more it sees.
   Discord servers.
 - **Control:** a Windows control panel (web panel plus Tauri app), reached over Tailscale.
 - **Roles:** owner (you) plus per-server admins.
+- **Data budget: $0** (decided later the same day). Paid sources mentioned below, such as
+  Keepa, are out. Free and official sources only; see [GRAILS.md](GRAILS.md).
 - **Private tool:** it's not sold or shared.
 - **Any hot retail product:** UniFi first, then GPUs, consoles, collectibles, homelab gear, and
   more.
