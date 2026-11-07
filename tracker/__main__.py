@@ -9,14 +9,18 @@ import sys
 from collections import Counter
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import select
+
 from tracker.app import run_tracker
 from tracker.db.migrate import upgrade_async
-from tracker.db.models import EbayStats, Valuation, Variant
+from tracker.db.models import EbayStats, EbayStatsHistory, Valuation, Variant
 from tracker.db.session import create_engine, create_sessionmaker
 from tracker.domain import ListingSnapshot, format_cents
+from tracker.history import humanize, stock_history
 from tracker.http import HttpClient
 from tracker.ingest import Ingestor
 from tracker.legacy import import_legacy
@@ -25,7 +29,7 @@ from tracker.market.ebay import EbayClient
 from tracker.market.service import MarketService
 from tracker.market.valuation import ValuationResult
 from tracker.outbox import EventDispatcher, LoggingSink, load_events
-from tracker.queries import opportunities, resolve_variant, variant_comps
+from tracker.queries import opportunities, resolve_variant, variant_comps, variant_listings
 from tracker.settings import Settings, get_settings
 from tracker.sources.unifi import UnifiStore
 
@@ -306,6 +310,55 @@ async def cmd_market_scan(settings: Settings, args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_history(settings: Settings, args: argparse.Namespace) -> int:
+    await upgrade_async(settings.app.resolved_database_url)
+    engine = create_engine(settings.app.resolved_database_url)
+    now = datetime.now(UTC)
+    try:
+        async with create_sessionmaker(engine)() as session:
+            variant = await resolve_variant(session, args.sku)
+            if variant is None:
+                print(f"No product matches {args.sku!r}.")
+                return 1
+            print(f"{variant.sku}")
+            for row in await variant_listings(session, variant.id):
+                listing = row.listing
+                history = await stock_history(session, listing.id)
+                gone = history.out_of_stock_for(now)
+                sellout = humanize(history.median_sellout)
+                flags = []
+                if listing.delisted_at:
+                    flags.append(f"delisted {listing.delisted_at:%Y-%m-%d}")
+                if listing.raw_status in ("RegionNotAvailable", "Unavailable"):
+                    flags.append("withdrawn from region")
+                print(
+                    f"  {listing.source}/{listing.region:<3} {listing.status:<13} "
+                    f"restocks {history.restocks}  median sell-out {sellout}  "
+                    f"out of stock {humanize(gone) if gone else '-'}"
+                    f"{'+' if history.unavailable_at_least and gone else ''}  {' '.join(flags)}"
+                )
+            rows = list(
+                await session.scalars(
+                    select(EbayStatsHistory)
+                    .where(EbayStatsHistory.variant_id == variant.id)
+                    .order_by(EbayStatsHistory.day)
+                )
+            )
+    finally:
+        await engine.dispose()
+    if rows:
+        print("  eBay daily aggregates (active market):")
+        for r in rows[-30:]:
+            print(
+                f"    {r.day}  sellers {r.active_count:>3} ({r.active_listings} listings)  "
+                f"floor {format_cents(r.active_p25_cents):>10}  median "
+                f"{format_cents(r.active_median_cents):>10}  retail {format_cents(r.retail_cents)}"
+            )
+    else:
+        print("  No eBay history yet (collected automatically; daily for end-of-life candidates).")
+    return 0
+
+
 async def cmd_opportunities(settings: Settings, args: argparse.Namespace) -> int:
     async with _market(settings) as (market, sessions):
         await market.revalue_all()
@@ -394,6 +447,10 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--limit", type=int, default=25, help="items to price (1 eBay call each)")
     scan.add_argument("--min-retail", type=float, default=100.0, help="dollars")
     scan.set_defaults(handler=cmd_market_scan)
+
+    hist = commands.add_parser("history", help="stock cycles and eBay trend for a product")
+    hist.add_argument("sku")
+    hist.set_defaults(handler=cmd_history)
 
     opps = commands.add_parser("opportunities", help="rank resale opportunities")
     opps.add_argument("--limit", type=int, default=20)

@@ -185,7 +185,9 @@ class UnifiSettings(BaseSettings):
     model_config = _config("UNIFI_STORE_")
 
     base_url: str = "https://store.ui.com"
-    regions: CommaList = Field(default_factory=lambda: ["us"])
+    # All four stores by default: a product vanishing from one region first is an early
+    # end-of-life signal (see docs/GRAILS.md).
+    regions: CommaList = Field(default_factory=lambda: ["us", "ca", "uk", "eu"])
     language: str = "en"
     # Category slugs to crawl in addition to those discovered from the store home page.
     extra_categories: CommaList = Field(default_factory=list)
@@ -288,6 +290,9 @@ class MarketSettings(BaseSettings):
     collect_per_tick: int = Field(default=1, ge=1)
     refresh_hot_hours: float = Field(default=6, ge=1)
     refresh_hours: float = Field(default=72, ge=1)
+    # End-of-life candidates (sold out, coming soon, withdrawn, delisted): daily, so the
+    # price history that grail detection relies on has no gaps.
+    refresh_daily_hours: float = Field(default=24, ge=1)
     min_retail_cents: int = Field(default=4000, ge=0)
     valuation_interval_seconds: float = Field(default=900, ge=60)
 

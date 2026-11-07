@@ -118,6 +118,7 @@ def test_find_category_slugs(fixture_text: Callable[[str], str]):
         ("SoldOut", StockStatus.OUT_OF_STOCK),
         ("ComingSoon", StockStatus.COMING_SOON),
         ("Unavailable", StockStatus.OUT_OF_STOCK),
+        ("RegionNotAvailable", StockStatus.OUT_OF_STOCK),
         ("LIMITED_STOCK", StockStatus.LOW_STOCK),
         ("SomethingNew", StockStatus.UNKNOWN),
         (None, StockStatus.UNKNOWN),

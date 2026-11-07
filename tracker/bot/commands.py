@@ -18,7 +18,7 @@ from tracker.audit import audit, describe, recent_audit
 from tracker.bot.cleanup import cleanup_messages
 from tracker.bot.embeds import KIND_STYLE, alert_content, alert_embed, source_name, status_text
 from tracker.bot.views import alert_view
-from tracker.db.models import MarketComp, Product, Valuation, Variant
+from tracker.db.models import Listing, MarketComp, Product, Valuation, Variant
 from tracker.domain import EventKind, Priority, SourceKey, StockStatus, format_cents
 from tracker.guilds import (
     ADMIN_FIELDS,
@@ -28,6 +28,7 @@ from tracker.guilds import (
     list_guilds,
     update_config,
 )
+from tracker.history import EbayTrend, StockHistory, ebay_trend, humanize, stock_history
 from tracker.market.ebay import EbayItem
 from tracker.market.matching import MatchResult
 from tracker.market.scan import ScanReport
@@ -86,6 +87,40 @@ def _row_line(row: ListingRow) -> str:
     if listing.delisted_at:
         parts.append("delisted")
     return " · ".join(parts)
+
+
+WITHDRAWN_STATUSES = frozenset({"RegionNotAvailable", "Unavailable"})
+
+
+def history_lines(listing: Listing, history: StockHistory, now: datetime) -> list[str]:
+    """Rarity-relevant facts about one listing's stock history."""
+    lines: list[str] = []
+    if listing.delisted_at:
+        lines.append(f"🗑️ Delisted {_ts(listing.delisted_at)}")
+    elif listing.raw_status in WITHDRAWN_STATUSES:
+        lines.append("🌍 Withdrawn from this region")
+    if history.median_sellout is not None:
+        count = len(history.sellout_times)
+        lines.append(
+            f"⏱️ Sells out in ~{humanize(history.median_sellout)} "
+            f"(median of {count} restock{'s' if count != 1 else ''})"
+        )
+    gone = history.out_of_stock_for(now)
+    if gone is not None and not StockStatus(listing.status).is_available:
+        plus = "+" if history.unavailable_at_least else ""
+        lines.append(f"⌛ Out of stock {humanize(gone)}{plus}")
+    return lines
+
+
+def trend_text(trend: EbayTrend) -> str:
+    def pct(value: float | None) -> str:
+        return f" ({value:+.0%})" if value is not None else ""
+
+    return (
+        f"Sellers {trend.sellers_then} → {trend.sellers_now}{pct(trend.sellers_change)} · "
+        f"price floor {format_cents(trend.p25_then)} → {format_cents(trend.p25_now)}"
+        f"{pct(trend.price_change)} · {trend.snapshots} daily snapshots"
+    )
 
 
 def _clip(lines: list[str], limit: int = 1024) -> str:
@@ -175,6 +210,7 @@ def value_embed(
     settings: MarketSettings,
     *,
     live: list[tuple[EbayItem, MatchResult]] | None = None,
+    trend: EbayTrend | None = None,
 ) -> discord.Embed:
     title = f"💰 {variant.sku}" + (f" · {product.name}" if product else "")
     embed = discord.Embed(title=title[:256], color=0xF1C40F)
@@ -221,6 +257,10 @@ def value_embed(
             inline=True,
         )
         embed.set_footer(text=f"Valued {v.computed_at:%Y-%m-%d %H:%M} UTC")
+    if trend is not None:
+        embed.add_field(
+            name=f"📈 eBay trend ({trend.days}d)", value=trend_text(trend), inline=False
+        )
     if comps:
         lines = []
         for c in comps:
@@ -481,12 +521,18 @@ class TrackerCommands(commands.Cog):
             return
         first = rows[0]
         embed = discord.Embed(title=first.product.name[:256], url=first.listing.url, color=0x5865F2)
+        now = datetime.now(UTC)
+        async with self.ctx.sessions() as session:
+            histories = {
+                r.listing.id: await stock_history(session, r.listing.id) for r in rows[:20]
+            }
         for row in rows[:20]:
             listing = row.listing
             lines = [
                 status_text(StockStatus(listing.status))
                 + f" · {format_cents(listing.price_cents, listing.currency)}"
             ]
+            lines.extend(history_lines(listing, histories[listing.id], now))
             if listing.restock_eta and listing.status != StockStatus.IN_STOCK:
                 lines.append(f"Restock ETA {listing.restock_eta.isoformat()}")
             if listing.is_early_access:
@@ -684,8 +730,9 @@ class TrackerCommands(commands.Cog):
             valuation = await session.get(Valuation, variant.id)
             comps = await variant_comps(session, variant.id, limit=8)
             product_row = await session.get(Product, variant.product_id)
+            trend = await ebay_trend(session, variant.id)
         embed = value_embed(
-            variant, product_row, valuation, comps, self.ctx.settings.market, live=live
+            variant, product_row, valuation, comps, self.ctx.settings.market, live=live, trend=trend
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 

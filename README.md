@@ -183,7 +183,7 @@ Highlights:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `UNIFI_STORE_REGIONS` | `us` | Regions to track, e.g. `us,ca` |
+| `UNIFI_STORE_REGIONS` | `us,ca,uk,eu` | Regions to track; a product vanishing from one region first is an early end-of-life signal |
 | `TRACKER_MONITOR_CATALOG_INTERVAL_SECONDS` | `300` | Full catalog crawl |
 | `TRACKER_MONITOR_HOT_POLL_INTERVAL_SECONDS` | `60` | Re-check interval for hot listings |
 | `DISCORD_MENTION_KINDS` | `back_in_stock,early_access,new_listing,relisted` | Which events ping |
@@ -209,6 +209,7 @@ uv run tracker market value u7-pro         # valuation + comps (--all shows excl
 uv run tracker market collect u7-pro       # fetch eBay comps now
 uv run tracker market comp u7-pro 265 --shipping 10   # record a sold comp
 uv run tracker market scan --limit 25     # live read-only profit scan (top flips, pack breakouts)
+uv run tracker history udm-pro-max        # restock cycles, sell-out speed, daily eBay trend
 uv run tracker import-legacy           # manual import of old watchlist/subscribers
 uv run tracker db upgrade              # apply migrations (also automatic on start)
 ```

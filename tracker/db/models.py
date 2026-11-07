@@ -212,6 +212,35 @@ class EbayStats(Base):
     excluded: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class EbayStatsHistory(Base):
+    """One row per variant per UTC day: the day's latest eBay aggregates (no listing data).
+
+    eBay listings are never stored, so this history can't be backfilled. It exists only
+    from the day collection starts, which is why it records every collection.
+    """
+
+    __tablename__ = "ebay_stats_history"
+    __table_args__ = (UniqueConstraint("variant_id", "day"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    variant_id: Mapped[int] = mapped_column(
+        ForeignKey("variants.id", ondelete="CASCADE"), index=True
+    )
+    day: Mapped[date] = mapped_column(Date, index=True)
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    retail_cents: Mapped[int | None] = mapped_column(Integer)
+    sold_count: Mapped[int] = mapped_column(Integer, default=0)
+    sold_30d: Mapped[int] = mapped_column(Integer, default=0)
+    sold_median_cents: Mapped[int | None] = mapped_column(Integer)
+    sold_p25_cents: Mapped[int | None] = mapped_column(Integer)
+    sold_p75_cents: Mapped[int | None] = mapped_column(Integer)
+    active_count: Mapped[int] = mapped_column(Integer, default=0)
+    active_listings: Mapped[int] = mapped_column(Integer, default=0)
+    active_median_cents: Mapped[int | None] = mapped_column(Integer)
+    active_p25_cents: Mapped[int | None] = mapped_column(Integer)
+    active_low_cents: Mapped[int | None] = mapped_column(Integer)
+
+
 class Valuation(Base):
     """Latest resale valuation per variant (recomputed periodically)."""
 

@@ -45,6 +45,9 @@ STATUS_MAP: dict[str, StockStatus] = {
     "outofstock": StockStatus.OUT_OF_STOCK,
     # Seen in the CA store for an unpriced product not sold there (2026-11-07).
     "unavailable": StockStatus.OUT_OF_STOCK,
+    # Seen in the UK store: listed but withdrawn from that region (2026-11-07). Kept as
+    # raw_status too, because a regional withdrawal is an early end-of-life signal.
+    "regionnotavailable": StockStatus.OUT_OF_STOCK,
     "comingsoon": StockStatus.COMING_SOON,
     "preorder": StockStatus.COMING_SOON,
 }

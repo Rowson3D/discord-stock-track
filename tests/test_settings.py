@@ -27,7 +27,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch):
 
 def test_defaults():
     settings = Settings(env_file=None)
-    assert settings.unifi.regions == ["us"]
+    assert settings.unifi.regions == ["us", "ca", "uk", "eu"]
     assert settings.unifi.base_url == "https://store.ui.com"
     assert settings.app.resolved_database_url.startswith("sqlite+aiosqlite:///")
     assert settings.app.resolved_database_url.endswith("/tracker.db")

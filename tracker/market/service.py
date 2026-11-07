@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tracker.db.models import (
     EbayStats,
+    EbayStatsHistory,
     Event,
     Listing,
     MarketComp,
@@ -52,6 +53,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 SOURCE_MANUAL = "manual"
+TIER_HOT, TIER_DAILY, TIER_NORMAL = 0, 1, 2
 STAT_FIELDS = (
     "sold_count",
     "sold_30d",
@@ -130,9 +132,18 @@ class MarketService:
     # ── collection ────────────────────────────────────────────────────────
 
     async def due_variants(self, limit: int) -> list[int]:
+        """Variants whose eBay data is stale for their tier, most important first.
+
+        Tiers: hot (watched, high priority, Early Access, coming soon, restock within a week)
+        every `refresh_hot_hours`; end-of-life candidates (sold out, withdrawn from a region,
+        or delisted) every `refresh_daily_hours`; everything else every `refresh_hours`.
+        """
         now = self._clock()
-        hot_cutoff = now - timedelta(hours=self._settings.refresh_hot_hours)
-        cutoff = now - timedelta(hours=self._settings.refresh_hours)
+        cutoffs = {
+            TIER_HOT: now - timedelta(hours=self._settings.refresh_hot_hours),
+            TIER_DAILY: now - timedelta(hours=self._settings.refresh_daily_hours),
+            TIER_NORMAL: now - timedelta(hours=self._settings.refresh_hours),
+        }
         soon = now.date() + timedelta(days=7)
         watched = exists().where(Watch.listing_id == Listing.id)
         async with self._sessions() as session:
@@ -141,48 +152,74 @@ class MarketService:
                     select(
                         Variant.id,
                         Variant.comps_checked_at,
+                        Variant.pack_size,
+                        Product.category,
                         Listing.price_cents,
                         Listing.currency,
                         Listing.priority,
                         Listing.is_early_access,
                         Listing.status,
                         Listing.restock_eta,
+                        Listing.delisted_at,
                         watched,
                     )
                     .join(Listing, Listing.variant_id == Variant.id)
-                    .where(Listing.delisted_at.is_(None))
+                    .join(Product, Variant.product_id == Product.id)
                 )
             ).all()
 
         # Aggregate per variant across its listings (regions/retailers).
-        hot: dict[int, bool] = {}
+        tier: dict[int, int] = {}
         watched_any: dict[int, bool] = {}
         top_price: dict[int, int] = {}
         checked_at: dict[int, datetime | None] = {}
-        for vid, checked, price, currency, priority, ea, status, eta, is_watched in rows:
-            hot[vid] = hot.get(vid, False) or bool(
+        accessory: dict[int, bool] = {}
+        for (
+            vid,
+            checked,
+            pack_size,
+            category,
+            price,
+            currency,
+            priority,
+            ea,
+            status,
+            eta,
+            delisted,
+            is_watched,
+        ) in rows:
+            if delisted is None and (
                 is_watched
                 or priority == Priority.HIGH.value
                 or ea
                 or status == StockStatus.COMING_SOON.value
                 or (isinstance(eta, date) and eta <= soon)
-            )
+            ):
+                listing_tier = TIER_HOT
+            elif delisted is not None or not StockStatus(status).is_available:
+                listing_tier = TIER_DAILY
+            else:
+                listing_tier = TIER_NORMAL
+            tier[vid] = min(tier.get(vid, TIER_NORMAL), listing_tier)
             watched_any[vid] = watched_any.get(vid, False) or bool(is_watched)
-            usd_price = (price or 0) if currency == "USD" else 0
+            # Per-unit price: a 10-pack of $5 cables is not a $50 item.
+            usd_price = (price or 0) // max(1, pack_size) if currency == "USD" else 0
             top_price[vid] = max(top_price.get(vid, 0), usd_price)
             checked_at[vid] = checked
+            accessory[vid] = (category or "").startswith("accessories")
 
         due = [
-            (vid, hot[vid], checked_at[vid], top_price[vid])
-            for vid in hot
-            # Skip cheap accessories unless someone is watching them.
-            if (watched_any[vid] or top_price[vid] >= self._settings.min_retail_cents)
-            and (
-                checked_at[vid] is None or checked_at[vid] < (hot_cutoff if hot[vid] else cutoff)  # type: ignore[operator]
+            (vid, tier[vid], checked_at[vid], top_price[vid])
+            for vid in tier
+            # Skip accessories and cheap items unless someone is watching them.
+            if (
+                watched_any[vid]
+                or (top_price[vid] >= self._settings.min_retail_cents and not accessory[vid])
             )
+            and (checked_at[vid] is None or checked_at[vid] < cutoffs[tier[vid]])
         ]
-        # Hot first, never-checked first, then the most expensive (most profit at stake).
-        due.sort(key=lambda d: (not d[1], d[2] is not None, d[2] or now, -d[3]))
+        # Most important tier first, never-checked first, stalest, then most expensive.
+        due.sort(key=lambda d: (d[1], d[2] is not None, d[2] or now, -d[3]))
         return [vid for vid, *_ in due[:limit]]
 
     async def collect_due(self) -> int:
@@ -261,6 +298,7 @@ class MarketService:
             for name in STAT_FIELDS:
                 setattr(row, name, getattr(stats, name))
             row.matched, row.excluded = report.matched, report.excluded
+            await self._record_history(session, variant_id, stats, retail_cents, now)
             stored = await session.get(Variant, variant_id)
             assert stored is not None
             stored.comps_checked_at = now
@@ -275,6 +313,29 @@ class MarketService:
             report.excluded,
         )
         return report
+
+    @staticmethod
+    async def _record_history(
+        session: AsyncSession,
+        variant_id: int,
+        stats: MarketStats,
+        retail_cents: int | None,
+        now: datetime,
+    ) -> None:
+        """Upsert today's aggregate row (the latest collection of the day wins)."""
+        day = now.astimezone(UTC).date()
+        row = await session.scalar(
+            select(EbayStatsHistory).where(
+                EbayStatsHistory.variant_id == variant_id, EbayStatsHistory.day == day
+            )
+        )
+        if row is None:
+            row = EbayStatsHistory(variant_id=variant_id, day=day)
+            session.add(row)
+        row.fetched_at = now
+        row.retail_cents = retail_cents
+        for name in STAT_FIELDS:
+            setattr(row, name, getattr(stats, name))
 
     async def add_manual_comp(
         self,

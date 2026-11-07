@@ -112,3 +112,27 @@ thing to build.
 | **G5. Beyond UniFi** | Best Buy API source, networking brands, families mapped across retailers |
 
 G1 should start immediately, even before the rest, because history compounds.
+
+---
+
+## Progress log
+
+**2026-11-07: G1 (start the clock) done**
+- `ebay_stats_history`: one row per variant per UTC day (latest collection wins), holding
+  aggregates only (sellers, listings, price floor, median, retail). Migration 0009.
+- Collection tiers: **hot** every 6h; **end-of-life candidates daily** (sold out, coming
+  soon, withdrawn from a region, or **delisted**; delisted items used to be skipped entirely);
+  everything else every 72h. Accessories and cheap multi-packs (judged per unit) no longer
+  spend eBay quota unless watched.
+- All four UniFi stores by default (`us,ca,uk,eu`). New regions baseline silently.
+- New status `RegionNotAvailable` (UK) mapped to out of stock, with the raw value kept: a
+  regional withdrawal is signal #1.
+- `tracker/history.py`: restock count, median sell-out time, out-of-stock duration (marked
+  "+" when it started before tracking), and N-day eBay trend (seller and price-floor change).
+- Surfaced in `/stock` (sell-out speed, out of stock for, withdrawn, delisted), `/value`
+  (eBay trend), and `tracker history <sku>`.
+- 244 tests.
+
+**Next: G2 (EOL detector):** regional cascade, long out of stock, successor detection,
+help.ui.com legacy list, Wayback first-seen backfill, and `eol_suspected`, `eol_confirmed`, and
+`last_call` events.
