@@ -136,3 +136,20 @@ G1 should start immediately, even before the rest, because history compounds.
 **Next: G2 (EOL detector):** regional cascade, long out of stock, successor detection,
 help.ui.com legacy list, Wayback first-seen backfill, and `eol_suspected`, `eol_confirmed`, and
 `last_call` events.
+
+**2026-11-07: deal credibility fix** (found while verifying G1 live)
+- **Problem:** 13 "deal" alerts fired on items the store had **in stock** (e.g. UDM-Pro-Max
+  "+$157"). They were based on eBay *asking* prices; nobody rational pays a reseller $889 for
+  something the store sells for $599. With no sold data, asking prices for in-stock items are
+  mirages.
+- **Fix:** asking-price valuations are **capped** while the store has the item
+  (`retail × (1 + 7% buyer tax + 5% convenience)`, basis `capped`). Deals and rankings use a
+  credible **flip** value only: eBay sold, your manual sales, or **scarcity pricing** (median
+  eBay price floor on days the store was sold out at snapshot time, from G1 history;
+  medium confidence needs at least 4 days and at least 3 sellers). Alerts only show credible
+  profit, labelled with its evidence. Migration 0010.
+- **Live after the fix:** 70 in-stock items capped (UDM-Pro-Max is −$31.76, not +$157), 35
+  sold-out items valued on the real current market, 0 deal flags. Credible flips appear once
+  sold-out history accumulates or sold data arrives. 254 tests.
+- This makes G1 history the engine of deal detection: **restock flips** fire when a
+  sold-out-market premium is proven and the item comes back.

@@ -31,8 +31,11 @@ something worth buying appears.
   is matched against the exact model: no "U7 Pro Max" counted as a U7 Pro, no lots, accessories,
   or for-parts listings. The tracker then estimates net profit after eBay fees, shipping, and tax,
   plus ROI, sell-through, and confidence, ranks everything with `/opportunities`, and fires a
-  **deal** alert when an item you can buy right now clears your profit threshold. Back-in-stock
-  alerts show the estimated profit.
+  **deal** alert when an item you can buy right now clears your profit threshold **on credible
+  evidence**: eBay sold prices, your own recorded sales, or **scarcity pricing** (eBay prices
+  recorded on days the store was sold out). eBay *asking* prices for something the store has in
+  stock are capped at the store price plus tax and convenience, so resellers' wishful listings
+  never trigger a deal. Back-in-stock alerts show the credible profit and its evidence.
 - **Optional SMS (Twilio)** and automatic cleanup of the bot's old messages.
 
 ## Quick Start (Docker)

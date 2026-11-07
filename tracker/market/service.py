@@ -34,6 +34,7 @@ from tracker.db.models import (
     Watch,
 )
 from tracker.domain import EventKind, Priority, StockStatus, format_cents
+from tracker.history import scarcity_stats
 from tracker.market.ebay import EbayClient, EbayError, EbayItem
 from tracker.market.matching import MatchResult, VariantMatcher, base_sku
 from tracker.market.valuation import (
@@ -442,8 +443,24 @@ class MarketService:
                 manual_stats = summarize(
                     manual.get(variant_id, []), retail_cents, self._settings, now
                 )
+                scarcity = (
+                    await scarcity_stats(
+                        session,
+                        variant_id,
+                        listing.id,
+                        now=now,
+                        window_days=self._settings.scarcity_window_days,
+                    )
+                    if listing is not None
+                    else None
+                )
                 result = compute_valuation(
-                    retail_cents, ebay.get(variant_id), manual_stats, self._settings
+                    retail_cents,
+                    ebay.get(variant_id),
+                    manual_stats,
+                    self._settings,
+                    available=available,
+                    scarcity=scarcity,
                 )
                 results[variant_id] = result
                 events += await self._store(session, variant_id, listing, available, result, now)
@@ -476,21 +493,34 @@ class MarketService:
             "cost_cents", "net_cents", "roi", "sold_count", "sold_30d", "active_count",
             "manual_count", "sold_median_cents", "sold_p25_cents", "sold_p75_cents",
             "active_median_cents", "active_low_cents", "sell_through", "confidence", "score",
+            "scarcity_days", "scarcity_resale_cents", "scarcity_net_cents", "scarcity_roi",
+            "flip_basis", "flip_net_cents", "flip_roi", "flip_confidence",
         ):  # fmt: skip
             setattr(valuation, name, getattr(result, name))
 
         deal_now = is_deal(result, available, self._settings)
         fired = 0
         if deal_now and not valuation.deal_active and listing is not None:
-            assert result.net_cents is not None
-            assert result.roi is not None
+            assert result.flip_net_cents is not None
+            assert result.flip_roi is not None
+            evidence = {
+                "sold": "eBay sold prices",
+                "manual": "your recorded sales",
+                "scarcity": (
+                    f"sold-out resale ~{format_cents(result.scarcity_resale_cents)} "
+                    f"over {result.scarcity_days} days"
+                ),
+            }.get(result.flip_basis or "", result.flip_basis or "")
             session.add(
                 Event(
                     listing=listing,
                     kind=EventKind.DEAL.value,
                     occurred_at=now,
                     old_value=None,
-                    new_value=f"net {format_cents(result.net_cents)} · ROI {result.roi:.0%}",
+                    new_value=(
+                        f"net {format_cents(result.flip_net_cents)} · "
+                        f"ROI {result.flip_roi:.0%} · {evidence}"
+                    ),
                 )
             )
             fired = 1

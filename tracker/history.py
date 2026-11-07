@@ -7,6 +7,7 @@ out-of-stock spells, and supply/price momentum on eBay.
 from __future__ import annotations
 
 import statistics
+from bisect import bisect_right
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -16,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tracker.db.models import EbayStatsHistory, StockObservation
 from tracker.domain import StockStatus
+from tracker.market.valuation import ScarcityStats
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,3 +153,50 @@ def humanize(delta: timedelta | None) -> str:
     if seconds < 86400:
         return f"{seconds // 3600}h {seconds % 3600 // 60}m"
     return f"{seconds // 86400}d"
+
+
+async def scarcity_stats(
+    session: AsyncSession,
+    variant_id: int,
+    listing_id: int,
+    *,
+    now: datetime,
+    window_days: int = 90,
+) -> ScarcityStats | None:
+    """eBay aggregates from days when the retail listing was sold out at snapshot time."""
+    rows = list(
+        await session.scalars(
+            select(EbayStatsHistory)
+            .where(
+                EbayStatsHistory.variant_id == variant_id,
+                EbayStatsHistory.day >= now.date() - timedelta(days=window_days),
+            )
+            .order_by(EbayStatsHistory.day)
+        )
+    )
+    if not rows:
+        return None
+    observations = (
+        await session.execute(
+            select(StockObservation.observed_at, StockObservation.status)
+            .where(StockObservation.listing_id == listing_id)
+            .order_by(StockObservation.observed_at, StockObservation.id)
+        )
+    ).all()
+    times = [at for at, _ in observations]
+
+    scarce = []
+    for row in rows:
+        index = bisect_right(times, row.fetched_at) - 1
+        if index < 0:
+            continue  # No stock knowledge yet at that moment.
+        status = StockStatus(observations[index][1])
+        if status.is_known and not status.is_available and row.active_p25_cents is not None:
+            scarce.append(row)
+    if not scarce:
+        return ScarcityStats(days=0, resale_cents=None, sellers=0)
+    return ScarcityStats(
+        days=len(scarce),
+        resale_cents=round(statistics.median(r.active_p25_cents for r in scarce)),
+        sellers=round(statistics.median(r.active_count for r in scarce)),
+    )

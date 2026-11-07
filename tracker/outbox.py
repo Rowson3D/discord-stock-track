@@ -142,7 +142,9 @@ async def load_events(
 
     events: list[RadarEvent] = []
     for event, listing, variant, product, valuation in (await session.execute(stmt)).all():
-        valued = valuation is not None and valuation.net_cents is not None
+        # Only credible profit reaches alerts: real sales, your sales, or scarcity pricing.
+        valued = valuation is not None and valuation.flip_net_cents is not None
+        scarce = valued and valuation.flip_basis == "scarcity"
         events.append(
             RadarEvent(
                 id=event.id,
@@ -163,19 +165,17 @@ async def load_events(
                 currency=listing.currency if listing else None,
                 restock_eta=listing.restock_eta if listing else None,
                 is_early_access=bool(listing and listing.is_early_access),
-                resale_cents=valuation.resale_cents if valued else None,
-                net_cents=valuation.net_cents if valued else None,
-                roi=valuation.roi if valued else None,
-                valuation_basis=valuation.basis if valued else None,
-                valuation_confidence=valuation.confidence if valued else None,
-                comps_count=(
-                    (
-                        valuation.sold_count
-                        if valuation.basis != "active"
-                        else valuation.active_count
-                    )
+                resale_cents=(
+                    (valuation.scarcity_resale_cents if scarce else valuation.resale_cents)
                     if valued
-                    else 0
+                    else None
+                ),
+                net_cents=valuation.flip_net_cents if valued else None,
+                roi=valuation.flip_roi if valued else None,
+                valuation_basis=valuation.flip_basis if valued else None,
+                valuation_confidence=valuation.flip_confidence if valued else None,
+                comps_count=(
+                    (valuation.scarcity_days if scarce else valuation.sold_count) if valued else 0
                 ),
             )
         )

@@ -94,7 +94,11 @@ def alert_embed(event: RadarEvent) -> discord.Embed:
     if event.is_early_access:
         embed.add_field(name="Access", value="⚡ Early Access", inline=True)
     if event.resale_cents is not None and event.profit_text:
-        basis = f"{event.valuation_basis} · {event.comps_count} comps"
+        basis = (
+            f"sold-out resale over {event.comps_count} days"
+            if event.valuation_basis == "scarcity"
+            else f"{event.valuation_basis} · {event.comps_count} comps"
+        )
         if event.valuation_confidence:
             basis += f" · {event.valuation_confidence} confidence"
         embed.add_field(

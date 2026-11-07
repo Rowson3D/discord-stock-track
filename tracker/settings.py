@@ -281,6 +281,12 @@ class MarketSettings(BaseSettings):
     inbound_shipping_cents: int = Field(default=0, ge=0)
 
     min_comps: int = Field(default=3, ge=1)
+    # In-stock ceiling for asking-price valuations: retail x (1 + buyer tax + convenience).
+    buyer_tax_rate: float = Field(default=0.07, ge=0, le=0.3)
+    convenience_premium: float = Field(default=0.05, ge=0, le=1)
+    # Scarcity pricing needs at least this many daily snapshots taken while sold out.
+    scarcity_min_days: int = Field(default=2, ge=1)
+    scarcity_window_days: int = Field(default=90, ge=7)
     sold_window_days: int = Field(default=90, ge=7)
     # eBay active-listing stats older than this are ignored (sold stats age by sold window).
     active_max_age_hours: float = Field(default=96, ge=1)

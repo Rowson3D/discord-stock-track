@@ -197,6 +197,19 @@ def _print_valuation(sku: str, v: ValuationResult | Valuation | None) -> None:
         f"cost {format_cents(v.cost_cents)} · sold {v.sold_count} (30d {v.sold_30d}) · "
         f"active {v.active_count}"
     )
+    if v.basis == "capped":
+        print("  capped: in stock at the store, so asking prices can't exceed store price + tax")
+    if getattr(v, "scarcity_days", 0):
+        print(
+            f"  sold-out market: ~{format_cents(v.scarcity_resale_cents)} over "
+            f"{v.scarcity_days} day(s) → net {format_cents(v.scarcity_net_cents)}"
+        )
+    flip = getattr(v, "flip_basis", None)
+    print(
+        f"  credible flip: {format_cents(v.flip_net_cents)} ({flip}, {v.flip_confidence})"
+        if flip
+        else "  credible flip: none yet (needs sold data, your sales, or sold-out history)"
+    )
 
 
 async def _variant_or_none(sessions: Any, sku: str) -> Variant | None:
@@ -374,12 +387,13 @@ async def cmd_opportunities(settings: Settings, args: argparse.Namespace) -> int
         return 0
     for rank, row in enumerate(rows, start=1):
         v = row.valuation
-        roi = f"{v.roi:.0%}" if v.roi is not None else "—"
+        roi = f"{v.flip_roi:.0%}" if v.flip_roi is not None else "—"
         state = "in stock" if v.available else "unavailable"
+        resale = v.scarcity_resale_cents if v.flip_basis == "scarcity" else v.resale_cents
         print(
             f"{rank:>2}. {row.variant.sku:<22} buy {format_cents(v.retail_cents):>10} → "
-            f"{format_cents(v.resale_cents):>10}  net {format_cents(v.net_cents):>9} ({roi:>4})  "
-            f"{v.basis}/{v.confidence}  {state}  score {v.score:.1f}"
+            f"{format_cents(resale):>10}  net {format_cents(v.flip_net_cents):>9} ({roi:>4})  "
+            f"{v.flip_basis}/{v.flip_confidence}  {state}  score {v.score:.1f}"
         )
     return 0
 

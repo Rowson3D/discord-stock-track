@@ -281,12 +281,12 @@ async def opportunities(
         .join(Variant, Valuation.variant_id == Variant.id)
         .join(Product, Variant.product_id == Product.id)
         .outerjoin(Listing, Valuation.listing_id == Listing.id)
-        .where(Valuation.net_cents.is_not(None))
-        .order_by(Valuation.score.desc(), Valuation.net_cents.desc())
+        .where(Valuation.flip_net_cents.is_not(None))
+        .order_by(Valuation.score.desc(), Valuation.flip_net_cents.desc())
         .limit(limit)
     )
     if min_profit_cents is not None:
-        stmt = stmt.where(Valuation.net_cents >= min_profit_cents)
+        stmt = stmt.where(Valuation.flip_net_cents >= min_profit_cents)
     if available_only:
         stmt = stmt.where(Valuation.available.is_(True))
     if category:

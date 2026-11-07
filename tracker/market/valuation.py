@@ -16,6 +16,11 @@ does not persist eBay data):
 
 Resale basis, in order: eBay sold median, manual sold median, eBay active 25th percentile
 (you'd have to undercut asking prices to sell quickly). Each needs `min_comps` data points.
+
+Active asking prices are **capped** while the store has the item in stock (basis `capped`):
+nobody rational pays a reseller far more than the store price. Profit from in-stock items
+must come from real sales data or from **scarcity pricing**: eBay prices recorded on days the
+store was sold out. Deals and rankings use that credible "flip" value only.
 """
 
 from __future__ import annotations
@@ -100,6 +105,29 @@ class ValuationResult:
     sell_through: float | None
     confidence: str
     score: float
+    # What it resells for while the store is sold out (from daily history).
+    scarcity_days: int = 0
+    scarcity_resale_cents: int | None = None
+    scarcity_net_cents: int | None = None
+    scarcity_roi: float | None = None
+    # The number deals and rankings trust: real sales, your own sales, or proven scarcity.
+    flip_basis: str | None = None  # sold | manual | scarcity
+    flip_net_cents: int | None = None
+    flip_roi: float | None = None
+    flip_confidence: str = "none"
+
+
+@dataclass(frozen=True, slots=True)
+class ScarcityStats:
+    """eBay asking prices on days the store itself was sold out.
+
+    Asking prices are only meaningful when the buyer has no cheaper option. On sold-out
+    days they're the market a restock buyer actually sells into.
+    """
+
+    days: int
+    resale_cents: int | None  # Median of those days' 25th-percentile asking price.
+    sellers: int  # Median distinct sellers on those days.
 
 
 def percentile(values: Sequence[int], fraction: float) -> int | None:
@@ -184,11 +212,42 @@ def opportunity_score(
     )
 
 
+def _profit(
+    resale: int | None, retail_cents: int | None, settings: MarketSettings
+) -> tuple[int | None, int | None, int | None, int | None, float | None]:
+    """(fees, shipping, cost, net, roi) for selling at `resale` after buying at retail."""
+    if resale is None or not retail_cents:
+        return None, None, None, None, None
+    fees = round(resale * settings.fee_rate) + settings.fixed_fee_cents
+    shipping = settings.outbound_shipping_cents
+    cost = round(retail_cents * (1 + settings.purchase_tax_rate)) + settings.inbound_shipping_cents
+    net = resale - fees - shipping - cost
+    return fees, shipping, cost, net, (round(net / cost, 4) if cost else None)
+
+
+def in_stock_ceiling(retail_cents: int, settings: MarketSettings) -> int:
+    """The most a rational buyer pays a reseller when the store has it in stock."""
+    return round(retail_cents * (1 + settings.buyer_tax_rate + settings.convenience_premium))
+
+
+def scarcity_confidence(scarcity: ScarcityStats | None, settings: MarketSettings) -> str:
+    if scarcity is None or scarcity.resale_cents is None:
+        return "none"
+    if scarcity.days >= max(4, settings.scarcity_min_days) and scarcity.sellers >= 3:
+        return "medium"
+    if scarcity.days >= settings.scarcity_min_days:
+        return "low"
+    return "none"
+
+
 def compute_valuation(
     retail_cents: int | None,
     ebay: MarketStats | None,
     manual: MarketStats | None,
     settings: MarketSettings,
+    *,
+    available: bool = False,
+    scarcity: ScarcityStats | None = None,
 ) -> ValuationResult:
     ebay, manual = ebay or EMPTY, manual or EMPTY
     minimum = settings.min_comps
@@ -202,18 +261,16 @@ def compute_valuation(
         basis, resale, sold_view = "manual", manual.sold_median_cents, manual
     elif ebay.active_count >= minimum:
         basis, resale = "active", ebay.active_p25_cents
+        if available and retail_cents and resale is not None:
+            # Asking prices for something the store sells right now are mostly resellers
+            # hoping; nobody rational pays more than the store price plus tax and hassle.
+            ceiling = in_stock_ceiling(retail_cents, settings)
+            if resale > ceiling:
+                basis, resale = "capped", ceiling
     elif manual.sold_count:
         sold_view = manual
 
-    fees = shipping = cost = net = None
-    roi = None
-    if resale is not None and retail_cents:
-        fees = round(resale * settings.fee_rate) + settings.fixed_fee_cents
-        shipping = settings.outbound_shipping_cents
-        cost = round(retail_cents * (1 + settings.purchase_tax_rate))
-        cost += settings.inbound_shipping_cents
-        net = resale - fees - shipping - cost
-        roi = round(net / cost, 4) if cost else None
+    fees, shipping, cost, net, roi = _profit(resale, retail_cents, settings)
 
     sell_through = None
     if ebay.sold_30d or (ebay.sold_count and ebay.active_count):
@@ -223,6 +280,19 @@ def compute_valuation(
     confidence = (
         confidence_for(sold_view.sold_count, ebay.active_count, minimum) if basis else "none"
     )
+
+    scarce_conf = scarcity_confidence(scarcity, settings)
+    scarce_net = scarce_roi = None
+    if scarce_conf != "none" and scarcity is not None:
+        *_, scarce_net, scarce_roi = _profit(scarcity.resale_cents, retail_cents, settings)
+
+    flip_basis = flip_net = flip_roi = None
+    flip_conf = "none"
+    if basis in ("sold", "manual") and net is not None:
+        flip_basis, flip_net, flip_roi, flip_conf = basis, net, roi, confidence
+    elif scarce_net is not None:
+        flip_basis, flip_net, flip_roi, flip_conf = "scarcity", scarce_net, scarce_roi, scarce_conf
+
     return ValuationResult(
         retail_cents=retail_cents,
         basis=basis,
@@ -243,7 +313,15 @@ def compute_valuation(
         active_low_cents=ebay.active_low_cents,
         sell_through=sell_through,
         confidence=confidence,
-        score=opportunity_score(net, roi, confidence, sell_through),
+        score=opportunity_score(flip_net, flip_roi, flip_conf, sell_through),
+        scarcity_days=scarcity.days if scarcity else 0,
+        scarcity_resale_cents=scarcity.resale_cents if scarcity else None,
+        scarcity_net_cents=scarce_net,
+        scarcity_roi=scarce_roi,
+        flip_basis=flip_basis,
+        flip_net_cents=flip_net,
+        flip_roi=flip_roi,
+        flip_confidence=flip_conf,
     )
 
 
@@ -262,11 +340,16 @@ def value_from_comps(
 
 
 def is_deal(result: ValuationResult, available: bool, settings: MarketSettings) -> bool:
+    """Buyable now, and profitable on *credible* evidence only.
+
+    Credible means real sales (eBay sold, your own) or proven scarcity pricing. eBay asking
+    prices for something the store has in stock never qualify.
+    """
     return bool(
         available
-        and result.net_cents is not None
-        and result.roi is not None
-        and result.net_cents >= settings.deal_min_profit_cents
-        and result.roi >= settings.deal_min_roi
-        and result.confidence in ("medium", "high")
+        and result.flip_net_cents is not None
+        and result.flip_roi is not None
+        and result.flip_net_cents >= settings.deal_min_profit_cents
+        and result.flip_roi >= settings.deal_min_roi
+        and result.flip_confidence in ("medium", "high")
     )

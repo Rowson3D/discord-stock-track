@@ -201,8 +201,12 @@ async def test_collect_matches_stores_and_values(catalog):
         variant = await session.get(Variant, vid)
         assert variant.comps_checked_at == now
 
-    # 2 sold comps < min 3, so the basis is active listings (4 sane comps).
-    assert valuation.basis == "active"
+    # 2 sold comps < min 3 → active listings (4 sellers). But U7-Pro is in stock at the
+    # store, so asking prices are capped at what a buyer would pay the store.
+    assert valuation.basis == "capped"
+    assert valuation.resale_cents == round(18900 * 1.12)
+    assert valuation.net_cents < 0
+    assert valuation.flip_basis is None  # nothing credible to flip on
     assert valuation.active_count == 4
     assert valuation.retail_cents == 18900  # the US/USD listing, not CAD
     assert valuation.net_cents is not None
@@ -225,7 +229,7 @@ async def test_stale_active_stats_are_ignored(catalog):
     await _service(catalog, ebay, lambda: T0).collect(vid)
 
     fresh = (await _service(catalog, None, lambda: T0 + timedelta(hours=95)).revalue([vid]))[vid]
-    assert fresh.basis == "active"
+    assert fresh.basis == "capped"  # in stock at the store
     stale = (await _service(catalog, None, lambda: T0 + timedelta(hours=97)).revalue([vid]))[vid]
     assert stale.basis is None
 
@@ -263,7 +267,10 @@ async def test_manual_comps_create_deal_event_once(catalog):
     async with catalog() as session:
         events = (await session.scalars(select(Event))).all()
         assert [(e.kind, e.new_value) for e in events] == [
-            (EventKind.DEAL, f"net ${result.net_cents / 100:,.2f} · ROI {result.roi:.0%}")
+            (
+                EventKind.DEAL,
+                f"net ${result.net_cents / 100:,.2f} · ROI {result.roi:.0%} · your recorded sales",
+            )
         ]
         valuation = await session.get(Valuation, vid)
         assert valuation.deal_active
@@ -409,7 +416,10 @@ async def test_opportunities_query_and_embeds(catalog):
     assert "Buy **$189.00** (in stock)" in embed.description
     breakdown = embed.fields[0].value
     assert breakdown.startswith("Resale $310.00")
-    assert len(embed.fields[2].value.splitlines()) == 3
+    verdict, comps_field = embed.fields[2], embed.fields[3]
+    assert verdict.name == "Verdict"
+    assert "Credible flip** (manual, medium): $66.44" in verdict.value
+    assert len(comps_field.value.splitlines()) == 3
 
 
 def test_value_embed_without_valuation():

@@ -275,6 +275,16 @@ class Valuation(Base):
     score: Mapped[float] = mapped_column(Float, default=0.0)
     # True while the deal alert condition holds, so `deal` fires once per crossing.
     deal_active: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Scarcity pricing: eBay on days the store was sold out (see valuation.py).
+    scarcity_days: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    scarcity_resale_cents: Mapped[int | None] = mapped_column(Integer)
+    scarcity_net_cents: Mapped[int | None] = mapped_column(Integer)
+    scarcity_roi: Mapped[float | None] = mapped_column(Float)
+    # The credible profit deals and rankings use: sold | manual | scarcity.
+    flip_basis: Mapped[str | None] = mapped_column(String(16))
+    flip_net_cents: Mapped[int | None] = mapped_column(Integer)
+    flip_roi: Mapped[float | None] = mapped_column(Float)
+    flip_confidence: Mapped[str] = mapped_column(String(8), default="none", server_default="none")
 
 
 class Meta(Base):

@@ -194,11 +194,13 @@ def _opportunity_line(rank: int, row: OpportunityRow) -> str:
     v = row.valuation
     status = status_text(StockStatus(row.listing.status)).split(" ")[0] if row.listing else "⚪"
     pack = f" ×{row.variant.pack_size}" if row.variant.pack_size > 1 else ""
-    roi = f"{v.roi:.0%}" if v.roi is not None else "—"
+    roi = f"{v.flip_roi:.0%}" if v.flip_roi is not None else "—"
+    resale = v.scarcity_resale_cents if v.flip_basis == "scarcity" else v.resale_cents
+    evidence = f"sold-out ×{v.scarcity_days}d" if v.flip_basis == "scarcity" else v.flip_basis
     return (
         f"`{rank:>2}` {status} **{row.variant.sku}**{pack} · buy {format_cents(v.retail_cents)} "
-        f"→ ~{format_cents(v.resale_cents)} · **{format_cents(v.net_cents)}** ({roi}) · "
-        f"{v.basis} · {v.confidence}"
+        f"→ ~{format_cents(resale)} · **{format_cents(v.flip_net_cents)}** ({roi}) · "
+        f"{evidence} · {v.flip_confidence}"
     )
 
 
@@ -256,6 +258,34 @@ def value_embed(
             ),
             inline=True,
         )
+        notes = []
+        if v.basis == "capped":
+            notes.append(
+                "🧢 **Capped:** the store has it in stock, so eBay asking prices are capped at "
+                f"what a buyer would pay the store (~{format_cents(v.resale_cents)}). "
+                "Asking prices above that are resellers hoping, not real resale value."
+            )
+        if v.scarcity_days and v.scarcity_resale_cents:
+            scarce_net = (
+                f" → net **{format_cents(v.scarcity_net_cents)}** ({v.scarcity_roi:.0%})"
+                if v.scarcity_net_cents is not None and v.scarcity_roi is not None
+                else ""
+            )
+            notes.append(
+                f"🔥 **Sold-out market:** ~{format_cents(v.scarcity_resale_cents)} across "
+                f"{v.scarcity_days} day(s) the store was sold out{scarce_net}."
+            )
+        if v.flip_basis:
+            notes.append(
+                f"✅ **Credible flip** ({v.flip_basis}, {v.flip_confidence}): "
+                f"{format_cents(v.flip_net_cents)} per unit."
+            )
+        else:
+            notes.append(
+                "⚠️ **No credible flip yet:** needs eBay sold data, your own sales (`/comp`), "
+                "or prices recorded while the store is sold out."
+            )
+        embed.add_field(name="Verdict", value="\n".join(notes)[:1024], inline=False)
         embed.set_footer(text=f"Valued {v.computed_at:%Y-%m-%d %H:%M} UTC")
     if trend is not None:
         embed.add_field(

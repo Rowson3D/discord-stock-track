@@ -87,7 +87,7 @@ async def shop(sessions: async_sessionmaker[AsyncSession]):
     async with sessions() as session, session.begin():
         await Ingestor(session).ingest(
             [
-                snap("UVC-G5-Bullet", "uvc-g5-bullet", 12900),
+                snap("UVC-G5-Bullet", "uvc-g5-bullet", 12900, status=StockStatus.OUT_OF_STOCK),
                 snap("UVC-G5-Bullet-3", "uvc-g5-bullet", 35900, pack=3, variant_title="3-Pack"),
                 make_snapshot(
                     external_id="UACC-Cable-US",
@@ -121,6 +121,7 @@ async def test_scan_is_read_only_and_finds_breakouts(shop):
     assert (single.sellers, single.listings) == (4, 5)
     assert single.resale_cents == 22375  # p25 of 22000/22500/23000/26000
     assert single.net_cents > 0
+    assert single.basis == "active"  # store sold out: asking prices are the market
     [pack] = report.breakouts
     assert pack.pack_sku == "UVC-G5-Bullet-3"
     assert pack.unit_cost_cents == 11967
@@ -170,3 +171,26 @@ def test_scan_is_owner_only():
     assert check_access("scan", Role.SERVER_ADMIN, guild) is not None
     assert check_access("scan", Role.OWNER, guild) is None
     assert StockStatus.IN_STOCK.is_available
+
+
+async def test_in_stock_single_is_capped_so_no_fake_breakout(shop):
+    from sqlalchemy import update
+
+    from tracker.db.models import Listing
+
+    async with shop() as session, session.begin():
+        await session.execute(
+            update(Listing)
+            .where(Listing.external_id == "UVC-G5-Bullet-US")
+            .values(status=StockStatus.IN_STOCK.value)
+        )
+    titles = "Ubiquiti UniFi Protect G5 Bullet Camera UVC-G5-Bullet"
+    ebay = FakeEbay(
+        {"ubiquiti UVC G5 Bullet": [item(n, titles, 22000 + n * 500, f"s{n}") for n in range(5)]}
+    )
+    report = await run_scan(shop, ebay, SETTINGS, limit=10, min_retail_cents=10000, now=T0)
+    [single] = report.items
+    assert single.basis == "capped"
+    assert single.resale_cents == round(12900 * 1.12)
+    assert single.net_cents < 0
+    assert report.best_breakouts() == []  # no "profit" from asking prices the store undercuts

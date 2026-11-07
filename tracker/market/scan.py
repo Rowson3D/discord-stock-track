@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tracker.db.models import Listing, Product, Variant
 from tracker.domain import StockStatus
+from tracker.history import scarcity_stats
 from tracker.market.ebay import EbayClient
 from tracker.market.matching import VariantMatcher, base_sku
 from tracker.market.service import search_query
@@ -38,6 +39,11 @@ class ScanItem:
     net_cents: int | None
     roi: float | None
     confidence: str
+    basis: str | None = None  # sold | manual | active | capped
+    flip_basis: str | None = None
+    flip_net_cents: int | None = None
+    scarcity_resale_cents: int | None = None
+    scarcity_days: int = 0
 
     @property
     def available(self) -> bool:
@@ -197,7 +203,14 @@ async def run_scan(
                     )
                 )
         stats = summarize(comps, retail, settings, now)
-        value = compute_valuation(retail, stats, None, settings)
+        available = StockStatus(listing.status).is_available
+        async with sessions() as session:
+            scarcity = await scarcity_stats(
+                session, variant.id, listing.id, now=now, window_days=settings.scarcity_window_days
+            )
+        value = compute_valuation(
+            retail, stats, None, settings, available=available, scarcity=scarcity
+        )
         item = ScanItem(
             sku=variant.sku,
             name=product.name,
@@ -210,6 +223,11 @@ async def run_scan(
             net_cents=value.net_cents,
             roi=value.roi,
             confidence=value.confidence,
+            basis=value.basis,
+            flip_basis=value.flip_basis,
+            flip_net_cents=value.flip_net_cents,
+            scarcity_resale_cents=value.scarcity_resale_cents,
+            scarcity_days=value.scarcity_days,
         )
         report.items.append(item)
         resale_by_sku[variant.sku] = item
