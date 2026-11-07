@@ -21,6 +21,7 @@ KIND_STYLE: dict[EventKind, tuple[str, str, int]] = {
     EventKind.RESTOCK_ETA: ("📅", "Restock ETA", 0x3BA55C),
     EventKind.STATUS_CHANGE: ("🔁", "Status change", 0x99AAB5),
     EventKind.DELISTED: ("🗑️", "Delisted", 0x4F545C),
+    EventKind.DEAL: ("💰", "Deal", 0xF1C40F),
 }
 STATUS_STYLE: dict[StockStatus, tuple[str, str]] = {
     StockStatus.IN_STOCK: ("🟢", "In stock"),
@@ -60,6 +61,8 @@ def alert_content(plan: AlertPlan) -> str:
         parts.append(price)
     if event.region and event.region != "us":
         parts.append(event.region.upper())
+    if event.profit_text:
+        parts.append(event.profit_text)
     line = " · ".join(parts)
     return f"{line} {plan.mentions}".strip()[:2000]
 
@@ -90,6 +93,15 @@ def alert_embed(event: RadarEvent) -> discord.Embed:
         embed.add_field(name="Restock ETA", value=event.restock_eta.isoformat(), inline=True)
     if event.is_early_access:
         embed.add_field(name="Access", value="⚡ Early Access", inline=True)
+    if event.resale_cents is not None and event.profit_text:
+        basis = f"{event.valuation_basis} · {event.comps_count} comps"
+        if event.valuation_confidence:
+            basis += f" · {event.valuation_confidence} confidence"
+        embed.add_field(
+            name="💰 Resale estimate",
+            value=f"~{format_cents(event.resale_cents)} → net {event.profit_text}\n{basis}",
+            inline=False,
+        )
     store = source_name(event.source)
     if event.region:
         store += f" · {event.region.upper()}"

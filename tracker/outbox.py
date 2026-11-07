@@ -20,7 +20,7 @@ from typing import Protocol
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from tracker.db.models import Event, Listing, Product, Variant
+from tracker.db.models import Event, Listing, Product, Valuation, Variant
 from tracker.domain import EventKind, StockStatus, format_cents
 
 logger = logging.getLogger(__name__)
@@ -35,6 +35,7 @@ _HEADLINES = {
     EventKind.EARLY_ACCESS: "EARLY ACCESS",
     EventKind.DELISTED: "DELISTED",
     EventKind.RELISTED: "RELISTED",
+    EventKind.DEAL: "DEAL",
 }
 
 
@@ -60,6 +61,20 @@ class RadarEvent:
     currency: str | None
     restock_eta: date | None
     is_early_access: bool
+    # Latest resale valuation of the variant, when one exists.
+    resale_cents: int | None = None
+    net_cents: int | None = None
+    roi: float | None = None
+    valuation_basis: str | None = None
+    valuation_confidence: str | None = None
+    comps_count: int = 0
+
+    @property
+    def profit_text(self) -> str | None:
+        if self.net_cents is None or self.roi is None:
+            return None
+        sign = "+" if self.net_cents >= 0 else "−"
+        return f"{sign}{format_cents(abs(self.net_cents))} est. ({self.roi:.0%} ROI)"
 
     def summary(self) -> str:
         parts = [_HEADLINES.get(self.kind, self.kind.upper())]
@@ -75,6 +90,10 @@ class RadarEvent:
             parts.append(f"{self.pack_size}-pack")
         if self.is_early_access:
             parts.append("Early Access")
+        if self.profit_text and self.kind is not EventKind.DEAL:
+            parts.append(self.profit_text)
+        if self.kind is EventKind.DEAL and self.new_value:
+            parts.append(self.new_value)
         if self.restock_eta and self.kind is not EventKind.RESTOCK_ETA:
             parts.append(f"ETA {self.restock_eta.isoformat()}")
         if self.url:
@@ -107,10 +126,11 @@ async def load_events(
     session: AsyncSession, *, pending_only: bool, limit: int, kinds: Sequence[str] | None = None
 ) -> list[RadarEvent]:
     stmt = (
-        select(Event, Listing, Variant, Product)
+        select(Event, Listing, Variant, Product, Valuation)
         .outerjoin(Listing, Event.listing_id == Listing.id)
         .outerjoin(Variant, Listing.variant_id == Variant.id)
         .outerjoin(Product, Variant.product_id == Product.id)
+        .outerjoin(Valuation, Valuation.variant_id == Variant.id)
         .limit(limit)
     )
     if pending_only:
@@ -121,7 +141,8 @@ async def load_events(
         stmt = stmt.where(Event.kind.in_(list(kinds)))
 
     events: list[RadarEvent] = []
-    for event, listing, variant, product in (await session.execute(stmt)).all():
+    for event, listing, variant, product, valuation in (await session.execute(stmt)).all():
+        valued = valuation is not None and valuation.net_cents is not None
         events.append(
             RadarEvent(
                 id=event.id,
@@ -142,6 +163,20 @@ async def load_events(
                 currency=listing.currency if listing else None,
                 restock_eta=listing.restock_eta if listing else None,
                 is_early_access=bool(listing and listing.is_early_access),
+                resale_cents=valuation.resale_cents if valued else None,
+                net_cents=valuation.net_cents if valued else None,
+                roi=valuation.roi if valued else None,
+                valuation_basis=valuation.basis if valued else None,
+                valuation_confidence=valuation.confidence if valued else None,
+                comps_count=(
+                    (
+                        valuation.sold_count
+                        if valuation.basis != "active"
+                        else valuation.active_count
+                    )
+                    if valued
+                    else 0
+                ),
             )
         )
     return events

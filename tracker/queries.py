@@ -8,7 +8,16 @@ from datetime import date, datetime, timedelta
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tracker.db.models import Event, Listing, Product, StockObservation, Variant, Watch
+from tracker.db.models import (
+    Event,
+    Listing,
+    MarketComp,
+    Product,
+    StockObservation,
+    Valuation,
+    Variant,
+    Watch,
+)
 from tracker.domain import StockStatus
 
 
@@ -232,3 +241,54 @@ async def set_priority(session: AsyncSession, variant_id: int, priority: str) ->
         listing.priority = priority
         changed += 1
     return changed
+
+
+# ── market ────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class OpportunityRow:
+    valuation: Valuation
+    variant: Variant
+    product: Product
+    listing: Listing | None
+
+
+async def opportunities(
+    session: AsyncSession,
+    *,
+    limit: int = 15,
+    min_profit_cents: int | None = None,
+    available_only: bool = False,
+    category: str | None = None,
+) -> list[OpportunityRow]:
+    stmt = (
+        select(Valuation, Variant, Product, Listing)
+        .join(Variant, Valuation.variant_id == Variant.id)
+        .join(Product, Variant.product_id == Product.id)
+        .outerjoin(Listing, Valuation.listing_id == Listing.id)
+        .where(Valuation.net_cents.is_not(None))
+        .order_by(Valuation.score.desc(), Valuation.net_cents.desc())
+        .limit(limit)
+    )
+    if min_profit_cents is not None:
+        stmt = stmt.where(Valuation.net_cents >= min_profit_cents)
+    if available_only:
+        stmt = stmt.where(Valuation.available.is_(True))
+    if category:
+        stmt = stmt.where(func.lower(Product.category).like(f"%{category.lower()}%"))
+    return [OpportunityRow(*row) for row in (await session.execute(stmt)).all()]
+
+
+async def variant_comps(
+    session: AsyncSession, variant_id: int, *, include_excluded: bool = False, limit: int = 15
+) -> list[MarketComp]:
+    stmt = (
+        select(MarketComp)
+        .where(MarketComp.variant_id == variant_id)
+        .order_by(MarketComp.sold.desc(), MarketComp.observed_at.desc())
+        .limit(limit)
+    )
+    if not include_excluded:
+        stmt = stmt.where(MarketComp.excluded_reason.is_(None))
+    return list(await session.scalars(stmt))

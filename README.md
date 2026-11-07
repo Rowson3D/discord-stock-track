@@ -4,8 +4,8 @@ UniFi stock and launch radar with Discord alerts. It tracks the **entire Ubiquit
 every region you choose, records full stock and price history, and pings the right people when
 something worth buying appears.
 
-> Building toward a resale-intelligence platform: resale prices, profit, opportunity ranking,
-> a web dashboard, and a P&L ledger. See [docs/ROADMAP.md](docs/ROADMAP.md). Phases 0–2 are done.
+> Building toward a full resale-intelligence platform (web dashboard and P&L ledger next).
+> See [docs/ROADMAP.md](docs/ROADMAP.md). Phases 0–3 are done.
 
 ## What It Does
 
@@ -26,6 +26,13 @@ something worth buying appears.
 - **Other retailers.** Amazon, Best Buy, B&H, and Newegg URLs can be watched. They're parsed via
   schema.org data with anti-bot detection and automatic backoff. These sites often block bots;
   see [Known Limits](#known-limits).
+- **Resale intelligence.** Comps come from eBay's official API (active listings, plus sold
+  prices if your app gets Marketplace Insights access) and from manual entries. Each listing title
+  is matched against the exact model: no "U7 Pro Max" counted as a U7 Pro, no lots, accessories,
+  or for-parts listings. The tracker then estimates net profit after eBay fees, shipping, and tax,
+  plus ROI, sell-through, and confidence, ranks everything with `/opportunities`, and fires a
+  **deal** alert when an item you can buy right now clears your profit threshold. Back-in-stock
+  alerts show the estimated profit.
 - **Optional SMS (Twilio)** and automatic cleanup of the bot's old messages.
 
 ## Quick Start (Docker)
@@ -92,6 +99,9 @@ Without a token, the tracker runs headless and writes events to the log.
 | `/radar [kind] [limit]` | Recent radar events. |
 | `/restocks [days]` | Sold-out items with an announced restock date. |
 | `/status` | Health: catalog counts per region, last checks, scheduler jobs, events. |
+| `/opportunities [min_profit] [available] [category]` | Resale opportunities ranked by estimated profit. |
+| `/value product [refresh]` | Valuation: buy → resell → net, fee breakdown, sold/active stats, recent comps. |
+| `/comp product price [shipping] [condition] [quantity] [url] [note]` | *Admin.* Record a sold comp (e.g. your own sale). |
 | `/check product` | *Admin.* Check a product right now. |
 | `/priority product level` | *Admin.* `high` / `normal` / `low` polling priority. |
 | `/testalert [kind] [delay]` | *Admin.* Post a sample alert here (use a delay to test phone push). |
@@ -99,6 +109,34 @@ Without a token, the tracker runs headless and writes events to the log.
 
 Alert messages include **Open** and **Watch** buttons; the Watch button works for anyone and
 survives restarts. Admin means Manage Server permission or a user ID in `DISCORD_ADMIN_USER_IDS`.
+
+## Resale Data (eBay)
+
+Valuations work with manual comps alone (`/comp`), but eBay makes them automatic.
+
+1. Create a free account at https://developer.ebay.com and create an application keyset.
+2. Use the **Production** keyset: Sandbox only has fake test listings.
+3. eBay disables production keysets until you deal with **Marketplace Account Deletion
+   notifications**. This tracker uses application tokens only and stores listing data
+   (item IDs, titles, prices), never eBay user or account data. So choose **"exempt"** on the
+   keyset's account-deletion page instead of running a notification endpoint. If the form's
+   reasons don't fit, or the keyset stays disabled, contact eBay developer support.
+4. Put the production App ID and Cert ID in `.env`:
+
+```dotenv
+EBAY_CLIENT_ID=YourApp-PRD-xxxxxxxx-xxxxxxxx      # "App ID (Client ID)"
+EBAY_CLIENT_SECRET=PRD-xxxxxxxxxxxx-xxxx-xxxx     # "Cert ID (Client Secret)"
+```
+
+That gives **active listings** (Browse API). For **sold prices**, apply for eBay's
+Marketplace Insights API (limited release). Once approved, the same credentials pick it up
+automatically; until then the tracker logs that sold data is unavailable and values items from
+the competitive end of active listings. Collection stays well inside eBay's default quota: one
+product per minute, with hot items refreshed every 6h, others every 72h, and accessories under
+$40 skipped unless watched.
+
+Profit math: `net = resale − (resale × 13.6% + $0.40) − $12 shipping − retail × (1 + tax)`. All
+of it is configurable with `TRACKER_MARKET_*` variables.
 
 ## Configuration
 
@@ -115,6 +153,9 @@ Highlights:
 | `DISCORD_ALERT_COOLDOWN_MINUTES` | `10` | Suppress repeats of the same alert |
 | `SMS_ENABLED` + `TWILIO_*` + `SMS_TO_NUMBERS` | off | SMS for back in stock and Early Access |
 | `MESSAGE_CLEANUP_ENABLED` | `false` | Delete the bot's own messages after `MESSAGE_CLEANUP_TTL_MINUTES` |
+| `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` | unset | eBay production keyset for automatic comps |
+| `TRACKER_MARKET_DEAL_MIN_PROFIT_CENTS` / `_DEAL_MIN_ROI` | `3000` / `0.15` | Deal alert thresholds |
+| `TRACKER_MARKET_PURCHASE_TAX_RATE` | `0` | Sales tax you pay at retail |
 
 Old variable names (`STOCK_BOT_DATA_DIR`, `STOCK_BOT_LOG_*`, `CHECKOUT_ALLOWED_APPROVERS` for
 admins, Twilio and cleanup settings) still work.
@@ -126,6 +167,10 @@ uv run tracker run                     # the full tracker (bot + scheduler); Ctr
 uv run tracker unifi product u7-pro    # parse one product page
 uv run tracker unifi crawl [--save]    # crawl a whole region once
 uv run tracker radar --kind back_in_stock
+uv run tracker opportunities --available  # ranked resale opportunities
+uv run tracker market value u7-pro         # valuation + comps (--all shows excluded ones)
+uv run tracker market collect u7-pro       # fetch eBay comps now
+uv run tracker market comp u7-pro 265 --shipping 10   # record a sold comp
 uv run tracker import-legacy           # manual import of old watchlist/subscribers
 uv run tracker db upgrade              # apply migrations (also automatic on start)
 ```
@@ -157,6 +202,7 @@ tracker/
 ├── services/         UniFi monitor (crawl, feeds, hot polls, delisting), retailer poller
 ├── ingest.py         snapshots → state, change-only history, radar events
 ├── outbox.py         durable event dispatch to sinks
+├── market/           eBay client, title matching, valuation math, comp collection, deals
 ├── alerts.py         routing, pings, cooldown
 ├── bot/              Discord client, slash commands, embeds, buttons, sink, cleanup
 ├── sms.py            Twilio sink
@@ -174,6 +220,10 @@ tracker/
 - **Early Access** shows up only on product pages, so EA detection relies on product polls of new
   and hot items. It hasn't been observed live yet.
 - **Australia** and other unsupported regions are served the US store; the tracker rejects them.
+- **eBay sold prices** need Marketplace Insights approval. Without it, valuations rely on active
+  asking prices (25th percentile), which are rougher, and on manual comps. The eBay client is
+  built from eBay's documented API and tested against synthetic responses; it hasn't been run
+  against real credentials yet.
 
 ## Troubleshooting
 

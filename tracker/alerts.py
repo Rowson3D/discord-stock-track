@@ -21,7 +21,13 @@ from tracker.sources.web import parse_money
 
 # Events that go to the alert channel (with pings). Everything else is routine radar.
 IMPORTANT_KINDS = frozenset(
-    {EventKind.BACK_IN_STOCK, EventKind.EARLY_ACCESS, EventKind.NEW_LISTING, EventKind.RELISTED}
+    {
+        EventKind.BACK_IN_STOCK,
+        EventKind.EARLY_ACCESS,
+        EventKind.NEW_LISTING,
+        EventKind.RELISTED,
+        EventKind.DEAL,
+    }
 )
 
 

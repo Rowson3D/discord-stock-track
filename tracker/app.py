@@ -23,6 +23,8 @@ from tracker.db.migrate import upgrade_async
 from tracker.db.session import create_engine, create_sessionmaker
 from tracker.http import HttpClient
 from tracker.legacy import import_legacy
+from tracker.market.ebay import EbayClient
+from tracker.market.service import MarketService
 from tracker.outbox import EventDispatcher, EventSink, LoggingSink
 from tracker.scheduler import Scheduler
 from tracker.services.retail import RetailService
@@ -77,6 +79,25 @@ def build_scheduler(
     # Safety net: retries events a failed sink left pending.
     scheduler.add("outbox:dispatch", DISPATCH_INTERVAL_SECONDS, dispatcher.dispatch, jitter=0)
     return scheduler
+
+
+def add_market_jobs(scheduler: Scheduler, market: MarketService, settings: Settings) -> None:
+    if market.collecting:
+        scheduler.add(
+            "market:collect",
+            settings.market.collect_tick_seconds,
+            market.collect_due,
+            initial_delay=60.0,
+        )
+        logger.info("eBay comp collection enabled (%s)", settings.ebay.marketplace)
+    else:
+        logger.info("eBay not configured: valuations use manual comps only (/comp)")
+    scheduler.add(
+        "market:value",
+        settings.market.valuation_interval_seconds,
+        market.revalue_all,
+        initial_delay=45.0,
+    )
 
 
 async def auto_import_legacy(
@@ -140,6 +161,9 @@ async def run_tracker(
                 sessions, partial(fetch_listing, http), settings.retail, dispatcher
             )
             scheduler = build_scheduler(unifi, retail, dispatcher, settings, regions)
+            ebay = EbayClient(settings.ebay) if settings.ebay.configured else None
+            market = MarketService(sessions, ebay, settings.market, dispatcher)
+            add_market_jobs(scheduler, market, settings)
             await auto_import_legacy(settings, sessions, store)
 
             router = AlertRouter(settings.discord)
@@ -150,7 +174,15 @@ async def run_tracker(
             bot = None
             if settings.discord.enabled:
                 bot = _build_bot(
-                    settings, sessions, unifi, retail, dispatcher, scheduler, router, sink_list
+                    settings,
+                    sessions,
+                    unifi,
+                    retail,
+                    market,
+                    dispatcher,
+                    scheduler,
+                    router,
+                    sink_list,
                 )
             else:
                 logger.warning("DISCORD_BOT_TOKEN not set: running headless (events go to the log)")
@@ -161,7 +193,11 @@ async def run_tracker(
                 settings.monitor.catalog_interval_seconds,
                 settings.monitor.hot_tick_seconds,
             )
-            await _run_until_stopped(scheduler, bot, settings, stop)
+            try:
+                await _run_until_stopped(scheduler, bot, settings, stop)
+            finally:
+                if ebay is not None:
+                    await ebay.aclose()
     finally:
         await engine.dispose()
         logger.info("Tracker stopped")
@@ -172,6 +208,7 @@ def _build_bot(
     sessions: async_sessionmaker[AsyncSession],
     unifi: UnifiService,
     retail: RetailService,
+    market: MarketService,
     dispatcher: EventDispatcher,
     scheduler: Scheduler,
     router: AlertRouter,
@@ -188,6 +225,7 @@ def _build_bot(
         sessions=sessions,
         unifi=unifi,
         retail=retail,
+        market=market,
         dispatcher=dispatcher,
         scheduler=scheduler,
         started_at=datetime.now(UTC),

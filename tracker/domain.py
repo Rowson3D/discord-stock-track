@@ -50,6 +50,7 @@ class EventKind(StrEnum):
     EARLY_ACCESS = "early_access"
     DELISTED = "delisted"
     RELISTED = "relisted"
+    DEAL = "deal"  # An available listing whose estimated resale profit crossed the threshold.
 
 
 @dataclass(frozen=True, slots=True)

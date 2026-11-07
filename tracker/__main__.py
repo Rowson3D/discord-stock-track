@@ -7,18 +7,25 @@ import asyncio
 import logging
 import sys
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from tracker.app import run_tracker
 from tracker.db.migrate import upgrade_async
+from tracker.db.models import Valuation, Variant
 from tracker.db.session import create_engine, create_sessionmaker
 from tracker.domain import ListingSnapshot, format_cents
 from tracker.http import HttpClient
 from tracker.ingest import Ingestor
 from tracker.legacy import import_legacy
 from tracker.logconfig import configure_logging
-from tracker.outbox import load_events
+from tracker.market.ebay import EbayClient
+from tracker.market.service import MarketService
+from tracker.market.valuation import ValuationResult
+from tracker.outbox import EventDispatcher, LoggingSink, load_events
+from tracker.queries import opportunities, resolve_variant, variant_comps
 from tracker.settings import Settings, get_settings
 from tracker.sources.unifi import UnifiStore
 
@@ -158,6 +165,122 @@ async def cmd_radar(settings: Settings, args: argparse.Namespace) -> int:
     return 0
 
 
+@asynccontextmanager
+async def _market(settings: Settings) -> AsyncIterator[tuple[MarketService, Any]]:
+    """A MarketService over the configured DB (eBay client only when credentials exist)."""
+    await upgrade_async(settings.app.resolved_database_url)
+    engine = create_engine(settings.app.resolved_database_url)
+    sessions = create_sessionmaker(engine)
+    ebay = EbayClient(settings.ebay) if settings.ebay.configured else None
+    dispatcher = EventDispatcher(sessions, [LoggingSink()])
+    try:
+        yield MarketService(sessions, ebay, settings.market, dispatcher), sessions
+    finally:
+        if ebay is not None:
+            await ebay.aclose()
+        await engine.dispose()
+
+
+def _print_valuation(sku: str, v: ValuationResult | Valuation | None) -> None:
+    if v is None or v.basis is None:
+        print(f"{sku}: not enough comps for a valuation")
+        return
+    roi = f"{v.roi:.0%}" if v.roi is not None else "—"
+    print(
+        f"{sku}: buy {format_cents(v.retail_cents)} → resale {format_cents(v.resale_cents)} "
+        f"({v.basis}, {v.confidence}) → net {format_cents(v.net_cents)} ({roi} ROI)\n"
+        f"  fees {format_cents(v.fees_cents)} · shipping {format_cents(v.shipping_cents)} · "
+        f"cost {format_cents(v.cost_cents)} · sold {v.sold_count} (30d {v.sold_30d}) · "
+        f"active {v.active_count}"
+    )
+
+
+async def _variant_or_none(sessions: Any, sku: str) -> Variant | None:
+    async with sessions() as session:
+        variant = await resolve_variant(session, sku)
+    if variant is None:
+        print(f"No product matches {sku!r}.")
+    return variant
+
+
+async def cmd_market_value(settings: Settings, args: argparse.Namespace) -> int:
+    async with _market(settings) as (market, sessions):
+        variant = await _variant_or_none(sessions, args.sku)
+        if variant is None:
+            return 1
+        result = (await market.revalue([variant.id])).get(variant.id)
+        _print_valuation(variant.sku, result)
+        async with sessions() as session:
+            for comp in await variant_comps(session, variant.id, include_excluded=args.all):
+                flag = f" [excluded: {comp.excluded_reason}]" if comp.excluded_reason else ""
+                kind = "sold  " if comp.sold else "listed"
+                print(
+                    f"  {kind} {format_cents(comp.price_cents):>10} x{comp.quantity} "
+                    f"{comp.condition:<9} {comp.source:<11} {comp.title[:60]}{flag}"
+                )
+    return 0
+
+
+async def cmd_market_collect(settings: Settings, args: argparse.Namespace) -> int:
+    if not settings.ebay.configured:
+        print("Set EBAY_CLIENT_ID and EBAY_CLIENT_SECRET (production keyset) first.")
+        return 1
+    async with _market(settings) as (market, sessions):
+        variant = await _variant_or_none(sessions, args.sku)
+        if variant is None:
+            return 1
+        report = await market.collect(variant.id)
+        print(
+            f"{variant.sku}: query {report.query!r} → {report.fetched} results, "
+            f"{report.matched} matched, {report.excluded} excluded"
+        )
+        _print_valuation(variant.sku, report.valuation)
+    return 0
+
+
+async def cmd_market_comp(settings: Settings, args: argparse.Namespace) -> int:
+    async with _market(settings) as (market, sessions):
+        variant = await _variant_or_none(sessions, args.sku)
+        if variant is None:
+            return 1
+        result = await market.add_manual_comp(
+            variant.id,
+            round(args.price * 100),
+            shipping_cents=round(args.shipping * 100) if args.shipping is not None else None,
+            condition=args.condition,
+            quantity=args.quantity,
+            note=args.note,
+        )
+        print(f"Recorded {format_cents(round(args.price * 100))} comp for {variant.sku}.")
+        _print_valuation(variant.sku, result)
+    return 0
+
+
+async def cmd_opportunities(settings: Settings, args: argparse.Namespace) -> int:
+    async with _market(settings) as (market, sessions):
+        await market.revalue_all()
+        async with sessions() as session:
+            rows = await opportunities(
+                session,
+                limit=args.limit,
+                min_profit_cents=round(args.min_profit * 100),
+                available_only=args.available,
+            )
+    if not rows:
+        print("No profitable opportunities yet. Add comps (`tracker market comp`) or set up eBay.")
+        return 0
+    for rank, row in enumerate(rows, start=1):
+        v = row.valuation
+        roi = f"{v.roi:.0%}" if v.roi is not None else "—"
+        state = "in stock" if v.available else "unavailable"
+        print(
+            f"{rank:>2}. {row.variant.sku:<22} buy {format_cents(v.retail_cents):>10} → "
+            f"{format_cents(v.resale_cents):>10}  net {format_cents(v.net_cents):>9} ({roi:>4})  "
+            f"{v.basis}/{v.confidence}  {state}  score {v.score:.1f}"
+        )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tracker", description=__doc__)
     parser.add_argument("-v", "--verbose", action="store_true", help="verbose output")
@@ -199,6 +322,31 @@ def build_parser() -> argparse.ArgumentParser:
         "--kind", action="append", help="filter by kind (repeatable), e.g. --kind back_in_stock"
     )
     radar.set_defaults(handler=cmd_radar)
+
+    market = commands.add_parser("market", help="resale comps and valuations").add_subparsers(
+        dest="market_command", required=True
+    )
+    value = market.add_parser("value", help="show a product's valuation and comps")
+    value.add_argument("sku")
+    value.add_argument("--all", action="store_true", help="include excluded comps")
+    value.set_defaults(handler=cmd_market_value)
+    collect = market.add_parser("collect", help="fetch eBay comps for a product now")
+    collect.add_argument("sku")
+    collect.set_defaults(handler=cmd_market_collect)
+    comp = market.add_parser("comp", help="record a manual (sold) comp")
+    comp.add_argument("sku")
+    comp.add_argument("price", type=float, help="sale price in dollars")
+    comp.add_argument("--shipping", type=float, help="shipping the buyer paid")
+    comp.add_argument("--condition", default="new", choices=["new", "open_box", "used"])
+    comp.add_argument("--quantity", type=int, default=1)
+    comp.add_argument("--note")
+    comp.set_defaults(handler=cmd_market_comp)
+
+    opps = commands.add_parser("opportunities", help="rank resale opportunities")
+    opps.add_argument("--limit", type=int, default=20)
+    opps.add_argument("--min-profit", type=float, default=0.0, help="dollars")
+    opps.add_argument("--available", action="store_true", help="only items in stock now")
+    opps.set_defaults(handler=cmd_opportunities)
     return parser
 
 

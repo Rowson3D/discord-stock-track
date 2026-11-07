@@ -67,7 +67,7 @@ class AppSettings(BaseSettings):
         return f"sqlite+aiosqlite:///{(self.data_dir / 'tracker.db').resolve().as_posix()}"
 
 
-_DEFAULT_MENTION_KINDS = ["back_in_stock", "early_access", "new_listing", "relisted"]
+_DEFAULT_MENTION_KINDS = ["back_in_stock", "early_access", "new_listing", "relisted", "deal"]
 _PLACEHOLDER_TOKENS = {"replace-me", "YOUR_BOT_TOKEN_HERE"}
 _PLACEHOLDER_IDS = {"123456789012345678", ""}
 
@@ -122,7 +122,7 @@ class SmsSettings(BaseSettings):
     from_number: str = Field(default="", validation_alias="TWILIO_FROM_NUMBER")
     to_numbers: CommaList = Field(default_factory=list)
     timeout_seconds: float = 10
-    kinds: CommaList = Field(default_factory=lambda: ["back_in_stock", "early_access"])
+    kinds: CommaList = Field(default_factory=lambda: ["back_in_stock", "early_access", "deal"])
 
     _split = field_validator("to_numbers", "kinds", mode="before")(_split_commas)
 
@@ -229,6 +229,53 @@ class RetailSettings(BaseSettings):
         return float(getattr(self, f"{source}_interval_seconds", 120))
 
 
+class EbaySettings(BaseSettings):
+    """eBay developer app credentials (https://developer.ebay.com, free)."""
+
+    model_config = _config("EBAY_")
+
+    client_id: str = ""
+    client_secret: SecretStr | None = None
+    marketplace: str = "EBAY_US"
+    api_base: str = "https://api.ebay.com"
+    # Sold prices need eBay's Marketplace Insights approval; auto-disabled if refused.
+    use_marketplace_insights: bool = True
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.client_id and self.client_secret)
+
+
+class MarketSettings(BaseSettings):
+    """Resale valuation: fees, costs, comp collection cadence, deal thresholds."""
+
+    model_config = _config("TRACKER_MARKET_")
+
+    # eBay final value fee (most categories) and per-order fee.
+    fee_rate: float = Field(default=0.136, ge=0, le=0.5)
+    fixed_fee_cents: int = Field(default=40, ge=0)
+    # What you pay to ship a sold unit (label + packaging), per unit.
+    outbound_shipping_cents: int = Field(default=1200, ge=0)
+    purchase_tax_rate: float = Field(default=0.0, ge=0, le=0.3)
+    inbound_shipping_cents: int = Field(default=0, ge=0)
+
+    min_comps: int = Field(default=3, ge=1)
+    sold_window_days: int = Field(default=90, ge=7)
+    active_max_age_hours: float = Field(default=48, ge=1)
+
+    # Comp collection: one variant per tick per source; skip cheap accessories.
+    collect_tick_seconds: float = Field(default=60, ge=5)
+    collect_per_tick: int = Field(default=1, ge=1)
+    refresh_hot_hours: float = Field(default=6, ge=1)
+    refresh_hours: float = Field(default=72, ge=1)
+    min_retail_cents: int = Field(default=4000, ge=0)
+    valuation_interval_seconds: float = Field(default=900, ge=60)
+
+    # A listing that's buyable and clears both thresholds fires a `deal` alert.
+    deal_min_profit_cents: int = Field(default=3000, ge=0)
+    deal_min_roi: float = Field(default=0.15, ge=0)
+
+
 class Settings:
     """Aggregate of all settings groups."""
 
@@ -242,6 +289,8 @@ class Settings:
         self.retail = RetailSettings(_env_file=env_file)  # type: ignore[call-arg]
         self.sms = SmsSettings(_env_file=env_file)  # type: ignore[call-arg]
         self.cleanup = CleanupSettings(_env_file=env_file)  # type: ignore[call-arg]
+        self.ebay = EbaySettings(_env_file=env_file)  # type: ignore[call-arg]
+        self.market = MarketSettings(_env_file=env_file)  # type: ignore[call-arg]
 
 
 @lru_cache(maxsize=1)

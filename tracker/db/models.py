@@ -12,6 +12,7 @@ from datetime import UTC, date, datetime
 from sqlalchemy import (
     Boolean,
     Date,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -70,6 +71,8 @@ class Variant(Base):
     title: Mapped[str | None] = mapped_column(String(200))
     pack_size: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    # Last time resale comps were collected for this variant.
+    comps_checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 
     product: Mapped[Product] = relationship(back_populates="variants")
     listings: Mapped[list[Listing]] = relationship(back_populates="variant")
@@ -148,6 +151,70 @@ class Event(Base):
     notified_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 
     listing: Mapped[Listing | None] = relationship()
+
+
+class MarketComp(Base):
+    """One resale data point (an eBay sold/active listing or a manual entry) for a variant."""
+
+    __tablename__ = "market_comps"
+    __table_args__ = (UniqueConstraint("source", "external_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    variant_id: Mapped[int] = mapped_column(
+        ForeignKey("variants.id", ondelete="CASCADE"), index=True
+    )
+    source: Mapped[str] = mapped_column(String(32))  # ebay_sold | ebay_active | manual
+    external_id: Mapped[str] = mapped_column(String(200))
+    title: Mapped[str] = mapped_column(Text)
+    url: Mapped[str | None] = mapped_column(String(1000))
+    price_cents: Mapped[int] = mapped_column(Integer)  # Whole listing (all units).
+    shipping_cents: Mapped[int | None] = mapped_column(Integer)  # Paid by the buyer.
+    currency: Mapped[str] = mapped_column(String(8), default="USD")
+    condition: Mapped[str] = mapped_column(String(16), default="unknown")
+    quantity: Mapped[int] = mapped_column(Integer, default=1)  # Units in the listing (lots).
+    sold: Mapped[bool] = mapped_column(Boolean, default=False)
+    sold_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    observed_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    match_score: Mapped[float] = mapped_column(Float, default=1.0)
+    excluded_reason: Mapped[str | None] = mapped_column(String(100))
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(String(32))
+
+
+class Valuation(Base):
+    """Latest resale valuation per variant (recomputed periodically)."""
+
+    __tablename__ = "valuations"
+
+    variant_id: Mapped[int] = mapped_column(
+        ForeignKey("variants.id", ondelete="CASCADE"), primary_key=True
+    )
+    computed_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    listing_id: Mapped[int | None] = mapped_column(ForeignKey("listings.id", ondelete="SET NULL"))
+    currency: Mapped[str] = mapped_column(String(8), default="USD")
+    retail_cents: Mapped[int | None] = mapped_column(Integer)
+    available: Mapped[bool] = mapped_column(Boolean, default=False)
+    basis: Mapped[str | None] = mapped_column(String(16))  # sold | active | manual
+    resale_cents: Mapped[int | None] = mapped_column(Integer)
+    fees_cents: Mapped[int | None] = mapped_column(Integer)
+    shipping_cents: Mapped[int | None] = mapped_column(Integer)
+    cost_cents: Mapped[int | None] = mapped_column(Integer)
+    net_cents: Mapped[int | None] = mapped_column(Integer)
+    roi: Mapped[float | None] = mapped_column(Float)
+    sold_count: Mapped[int] = mapped_column(Integer, default=0)
+    sold_30d: Mapped[int] = mapped_column(Integer, default=0)
+    active_count: Mapped[int] = mapped_column(Integer, default=0)
+    manual_count: Mapped[int] = mapped_column(Integer, default=0)
+    sold_median_cents: Mapped[int | None] = mapped_column(Integer)
+    sold_p25_cents: Mapped[int | None] = mapped_column(Integer)
+    sold_p75_cents: Mapped[int | None] = mapped_column(Integer)
+    active_median_cents: Mapped[int | None] = mapped_column(Integer)
+    active_low_cents: Mapped[int | None] = mapped_column(Integer)
+    sell_through: Mapped[float | None] = mapped_column(Float)
+    confidence: Mapped[str] = mapped_column(String(8), default="none")
+    score: Mapped[float] = mapped_column(Float, default=0.0)
+    # True while the deal alert condition holds, so `deal` fires once per crossing.
+    deal_active: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class Meta(Base):

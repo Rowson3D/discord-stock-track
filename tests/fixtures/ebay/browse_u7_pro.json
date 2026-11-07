@@ -1,0 +1,53 @@
+{
+  "href": "https://api.ebay.com/buy/browse/v1/item_summary/search?q=ubiquiti+U7+Pro&limit=100",
+  "total": 5,
+  "limit": 100,
+  "offset": 0,
+  "itemSummaries": [
+    {
+      "itemId": "v1|110551000001|0",
+      "title": "Ubiquiti UniFi U7 Pro WiFi 7 Access Point U7-Pro NEW SEALED",
+      "price": {"value": "269.99", "currency": "USD"},
+      "condition": "New",
+      "conditionId": "1000",
+      "itemWebUrl": "https://www.ebay.com/itm/110551000001",
+      "shippingOptions": [{"shippingCostType": "FIXED", "shippingCost": {"value": "0.00", "currency": "USD"}}],
+      "buyingOptions": ["FIXED_PRICE", "BEST_OFFER"]
+    },
+    {
+      "itemId": "v1|110551000002|0",
+      "title": "Ubiquiti U7-Pro Wi-Fi 7 AP 6GHz - Brand New",
+      "price": {"value": "249.00", "currency": "USD"},
+      "condition": "New",
+      "conditionId": "1000",
+      "itemWebUrl": "https://www.ebay.com/itm/110551000002",
+      "shippingOptions": [{"shippingCostType": "FIXED", "shippingCost": {"value": "12.50", "currency": "USD"}}],
+      "buyingOptions": ["FIXED_PRICE"]
+    },
+    {
+      "itemId": "v1|110551000003|0",
+      "title": "Ubiquiti UniFi U7 Pro Max WiFi 7 Access Point",
+      "price": {"value": "329.00", "currency": "USD"},
+      "conditionId": "1000",
+      "itemWebUrl": "https://www.ebay.com/itm/110551000003",
+      "buyingOptions": ["FIXED_PRICE"]
+    },
+    {
+      "itemId": "v1|110551000004|0",
+      "title": "Lot of 2 Ubiquiti U7 Pro Access Points Open Box",
+      "price": {"value": "480.00", "currency": "USD"},
+      "conditionId": "1500",
+      "itemWebUrl": "https://www.ebay.com/itm/110551000004",
+      "buyingOptions": ["FIXED_PRICE"]
+    },
+    {
+      "itemId": "v1|110551000005|0",
+      "title": "UBIQUITI U7PRO ACCESS POINT",
+      "price": {"value": "259.00", "currency": "USD"},
+      "conditionId": "1000",
+      "itemWebUrl": "https://www.ebay.com/itm/110551000005",
+      "shippingOptions": [{"shippingCostType": "CALCULATED"}],
+      "buyingOptions": ["FIXED_PRICE"]
+    }
+  ]
+}

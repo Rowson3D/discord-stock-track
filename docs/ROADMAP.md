@@ -252,7 +252,39 @@ build (no Docker on the dev machine; the install steps were mirrored with `uv sy
 **Parity notes:** guarded checkout returns in Phase 6. YAML product packs are replaced by
 full-catalog tracking plus `/priority`.
 
-**Next: Phase 3 (market intelligence: resale comps, profit engine, opportunity score).**
+**2026-11-07: Phase 3 done** (same branch)
+- **Data-source spike:** eBay search pages (403), the eBay API without a token (403), and Reddit
+  (403 / login wall) all refuse anonymous access. Decision: eBay official API plus manual comps.
+  The Browse API gives active listings. Marketplace Insights gives sold prices behind the same
+  credentials if eBay approves it, and turns itself off on a 403.
+- **Matching** (`tracker/market/matching.py`): SKU phrase or compact match, rejects longer
+  catalog SKUs and model modifiers (U7-Pro ≠ U7 Pro Max / UDM-Pro ≠ UDM Pro SE), parts,
+  accessories, and box-only listings. Detects lot sizes: pack variants need the exact quantity,
+  and singles price lots per unit at a lower score. Condition comes from eBay condition IDs, else
+  the title.
+- **Valuation** (`tracker/market/valuation.py`): sold median (≥3 comps), else the active-listing
+  25th percentile; sanity band (0.3–4× retail) plus IQR outlier removal. Net after a 13.6% +
+  $0.40 fee, $12 shipping, and tax (default 0%). ROI, 30-day sell-through, confidence, and an
+  opportunity score (profit × √ROI × confidence × liquidity).
+- **Collection** (`tracker/market/service.py`): one variant per minute; hot items (watched, high
+  priority, EA, coming soon, restock within 7 days) every 6h, others every 72h, accessories under
+  $40 skipped. Comps are upserted by eBay item ID, and excluded comps are kept with a reason for
+  auditing.
+- **Deals:** a new `deal` event when a buyable item clears $30 net and 15% ROI at medium or high
+  confidence. It fires once per crossing and re-arms after the item sells out. It's an important
+  alert (pings by default, SMS by default). All alerts now show estimated profit when a valuation
+  exists.
+- **Surfaces:** `/opportunities`, `/value [refresh]`, admin `/comp`; CLI `tracker opportunities`
+  and `tracker market value|collect|comp`.
+- Migration 0005 (`market_comps`, `valuations`, `variants.comps_checked_at`). 178 tests.
+  Verified live against the real catalog with manual test comps; the profit math was checked by
+  hand.
+
+**Not verified:** the eBay client against real credentials (built from eBay's API docs and tested
+against synthetic responses; fixtures in `tests/fixtures/ebay/` should be replaced with recorded
+responses).
+
+**Next: Phase 4 (web dashboard).**
 
 ## 5. Risks and open questions
 

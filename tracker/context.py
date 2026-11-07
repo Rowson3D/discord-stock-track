@@ -7,6 +7,7 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from tracker.market.service import MarketService
 from tracker.outbox import EventDispatcher
 from tracker.scheduler import Scheduler
 from tracker.services.retail import RetailService
@@ -20,6 +21,7 @@ class TrackerContext:
     sessions: async_sessionmaker[AsyncSession]
     unifi: UnifiService
     retail: RetailService
+    market: MarketService
     dispatcher: EventDispatcher
     scheduler: Scheduler
     started_at: datetime

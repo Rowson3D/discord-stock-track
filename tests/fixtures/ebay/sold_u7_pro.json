@@ -1,0 +1,36 @@
+{
+  "href": "https://api.ebay.com/buy/marketplace_insights/v1_beta/item_sales/search?q=ubiquiti+U7+Pro",
+  "total": 3,
+  "limit": 100,
+  "offset": 0,
+  "itemSales": [
+    {
+      "itemId": "v1|220551000001|0",
+      "title": "Ubiquiti U7 Pro WiFi 7 Access Point New",
+      "lastSoldDate": "2026-11-01T18:22:31.000Z",
+      "lastSoldPrice": {"value": "239.00", "currency": "USD"},
+      "totalSoldQuantity": 1,
+      "conditionId": "1000",
+      "itemWebUrl": "https://www.ebay.com/itm/220551000001",
+      "shippingOptions": [{"shippingCostType": "FIXED", "shippingCost": {"value": "10.00", "currency": "USD"}}]
+    },
+    {
+      "itemId": "v1|220551000002|0",
+      "title": "UniFi U7-Pro sealed",
+      "lastSoldDate": "2026-10-20T03:10:00.000Z",
+      "lastSoldPrice": {"value": "245.00", "currency": "USD"},
+      "totalSoldQuantity": 2,
+      "conditionId": "1000",
+      "itemWebUrl": "https://www.ebay.com/itm/220551000002"
+    },
+    {
+      "itemId": "v1|220551000003|0",
+      "title": "Ubiquiti U7 Pro for parts no power",
+      "lastSoldDate": "2026-10-28T03:10:00.000Z",
+      "lastSoldPrice": {"value": "60.00", "currency": "USD"},
+      "totalSoldQuantity": 1,
+      "conditionId": "7000",
+      "itemWebUrl": "https://www.ebay.com/itm/220551000003"
+    }
+  ]
+}
