@@ -411,7 +411,7 @@ def test_redactor_masks_configured_and_shaped_secrets():
     redact = Redactor(["PRD-0000fake0000-secret", "short"])  # gitleaks:allow
     token = ".".join(  # fake token-shaped value, built at runtime
         ["MTIzNDU2Nzg5MDEyMzQ1Njc4OQ", "GaBcDe", "abcdefghijklmnopqrstuvwxyz0123456"]
-    ) (fake, test-only)
+    )
     line = (
         f"cert PRD-0000fake0000-secret token {token} Authorization: Bearer abc.def.ghi123 "
         "url https://x/?client_secret=hunter22&ok=1 password: swordfish short"
