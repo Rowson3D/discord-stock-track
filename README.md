@@ -121,7 +121,7 @@ mention role, admin role, ping rules, cooldown, and digest size (`/server config
 | Command | Who | What it does |
 |---|---|---|
 | `/watch product [region] [max_price]` | Member | Get pinged for back in stock, Early Access, and price drops. Accepts SKUs, names, or store URLs. |
-| `/unwatch product`, `/watches` | Member | Stop watching; list your watches. |
+| `/unwatch product`, `/watches` | Member | Stop watching; `/watches` lists yours with a picker and Remove, Mute 24h, and Unmute buttons. Per-item alert types, target prices, and rules are in the owner panel's Watchlist. |
 | `/subscribe`, `/unsubscribe` | Member | Pings for every important alert in this server. |
 | `/stock product`, `/radar`, `/restocks` | Member | Status and history, radar events, upcoming restocks. |
 | `/opportunities`, `/value product` | Member* | Resale rankings and valuations (*only where valuations are enabled). |

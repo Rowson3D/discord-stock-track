@@ -233,7 +233,9 @@ async def test_security_headers(client):
     assert response.headers["x-frame-options"] == "DENY"
     api = await client.get("/api/session")
     assert api.headers["cache-control"] == "no-store"
-    assert (await client.get("/static/app.js")).status_code == 200
+    script = await client.get("/static/app.js")
+    assert script.status_code == 200
+    assert script.headers["cache-control"] == "no-cache"  # updates are never stale
     assert (await client.get("/docs")).status_code == 404  # no API explorer
 
 

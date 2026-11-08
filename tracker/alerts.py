@@ -9,16 +9,18 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tracker.db.models import Event, Watch
+from tracker.db.models import Event, Watch, WatchRule
 from tracker.domain import EventKind
 from tracker.guilds import GuildConfig
 from tracker.outbox import RadarEvent
-from tracker.sources.web import parse_money
+from tracker.watching import is_price_drop, now_utc, rule_matches, watch_pings
+
+__all__ = ["IMPORTANT_KINDS", "AlertPlan", "AlertRouter", "is_price_drop", "strip_valuation"]
 
 # Events that go to the alert channel (with pings). Everything else is routine radar.
 IMPORTANT_KINDS = frozenset(
@@ -51,13 +53,6 @@ class AlertPlan:
         return bool(self.mention_user_ids or self.mention_text)
 
 
-def is_price_drop(event: RadarEvent) -> bool:
-    if event.kind is not EventKind.PRICE_CHANGE:
-        return False
-    old, new = parse_money(event.old_value), parse_money(event.new_value)
-    return old is not None and new is not None and new < old
-
-
 def strip_valuation(event: RadarEvent) -> RadarEvent:
     """Remove eBay-derived numbers for servers that don't show valuations."""
     return dataclasses.replace(
@@ -81,7 +76,9 @@ class AlertRouter:
         guild: GuildConfig,
         *,
         home_guild_id: str | None = None,
+        now: datetime | None = None,
     ) -> list[AlertPlan]:
+        now = now or now_utc()
         listing_ids = {e.listing_id for e in events if e.listing_id is not None}
         watches = (
             await session.scalars(
@@ -97,7 +94,14 @@ class AlertRouter:
             for w in watches
             if (w.guild_id or home_guild_id) == guild.guild_id or guild.guild_id == "global"
         ]
-        subscribers = sorted({w.discord_user_id for w in mine if w.listing_id is None})
+        subscribers = sorted(
+            {w.discord_user_id for w in mine if w.listing_id is None and not _muted_now(w, now)}
+        )
+        rules = [
+            r
+            for r in await session.scalars(select(WatchRule).where(WatchRule.enabled))
+            if (r.guild_id or home_guild_id) == guild.guild_id or guild.guild_id == "global"
+        ]
         by_listing: dict[int, list[Watch]] = {}
         for watch in mine:
             if watch.listing_id is not None:
@@ -108,7 +112,7 @@ class AlertRouter:
             if not guild.show_valuations:
                 event = strip_valuation(event)
             plan = self._plan_one(
-                event, by_listing.get(event.listing_id or -1, []), subscribers, guild
+                event, by_listing.get(event.listing_id or -1, []), subscribers, rules, guild, now
             )
             if event.kind is EventKind.DEAL and not guild.show_valuations:
                 plan.suppressed = "valuations hidden in this server"
@@ -120,26 +124,26 @@ class AlertRouter:
 
     @staticmethod
     def _plan_one(
-        event: RadarEvent, watches: list[Watch], subscribers: list[str], guild: GuildConfig
+        event: RadarEvent,
+        watches: list[Watch],
+        subscribers: list[str],
+        rules: list[WatchRule],
+        guild: GuildConfig,
+        now: datetime,
     ) -> AlertPlan:
-        mention_kinds = {EventKind(k) for k in guild.mention_kinds if k in EventKind}
+        mention_kinds = frozenset(EventKind(k) for k in guild.mention_kinds if k in EventKind)
+        watchers = {w.discord_user_id for w in watches if watch_pings(w, event, mention_kinds, now)}
+        ruled = {r.discord_user_id for r in rules if rule_matches(r, event, now)}
         drop = is_price_drop(event)
-        important = event.kind in IMPORTANT_KINDS or (drop and bool(watches))
+        # Anything someone explicitly asked to be pinged about belongs in the alert channel.
+        important = event.kind in IMPORTANT_KINDS or (drop and bool(watchers)) or bool(ruled)
         channel = guild.alert_channel_id if important else guild.effective_radar_channel
         plan = AlertPlan(event=event, important=important, channel_id=channel)
-
-        if event.kind in mention_kinds or drop:
-            plan.mention_user_ids = sorted(
-                {
-                    w.discord_user_id
-                    for w in watches
-                    if w.max_price_cents is None
-                    or (event.price_cents is not None and event.price_cents <= w.max_price_cents)
-                }
-            )
+        mentioned = watchers | ruled
         if event.kind in mention_kinds:
-            plan.mention_user_ids = sorted(set(plan.mention_user_ids) | set(subscribers))
+            mentioned |= set(subscribers)
             plan.mention_text = guild.alert_mention.strip()
+        plan.mention_user_ids = sorted(mentioned)
         return plan
 
     @staticmethod
@@ -160,3 +164,12 @@ class AlertRouter:
             .limit(1)
         )
         return earlier is not None
+
+
+def _muted_now(watch: Watch, now: datetime) -> bool:
+    until = watch.muted_until
+    if until is None:
+        return False
+    if until.tzinfo is None:
+        until = until.replace(tzinfo=now.tzinfo)
+    return until > now

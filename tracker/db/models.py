@@ -355,6 +355,33 @@ class Watch(Base):
     # The server the watch was set in; pings go there. NULL (pre-Phase 4) = the home server.
     guild_id: Mapped[str | None] = mapped_column(String(32), index=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    # Which alerts ping for this watch (comma list of alert keys, see tracker/watching.py).
+    # NULL keeps the server's defaults.
+    kinds: Mapped[str | None] = mapped_column(String(200))
+    # No pings until this time (the alert still posts in the channel).
+    muted_until: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+
+class WatchRule(Base):
+    """ "Ping me for anything matching…": a standing watch over products that may not exist yet."""
+
+    __tablename__ = "watch_rules"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    discord_user_id: Mapped[str] = mapped_column(String(32), index=True)
+    # The server pings go to. NULL = the home server.
+    guild_id: Mapped[str | None] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(80))
+    # All set criteria must match. Text matches are case-insensitive substrings.
+    query: Mapped[str | None] = mapped_column(String(80))  # SKU or product name
+    category: Mapped[str | None] = mapped_column(String(80))
+    regions: Mapped[str | None] = mapped_column(String(100))  # comma list; NULL = any
+    kinds: Mapped[str | None] = mapped_column(String(200))  # alert keys; NULL = rule defaults
+    max_price_cents: Mapped[int | None] = mapped_column(Integer)
+    min_profit_cents: Mapped[int | None] = mapped_column(Integer)  # credible profit only
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    muted_until: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
 # The audit log is append-only at the database level, not just by convention.

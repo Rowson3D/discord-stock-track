@@ -222,7 +222,7 @@ async def _run_locked(
             else:
                 logger.warning("DISCORD_BOT_TOKEN not set: running headless (events go to the log)")
 
-            panel = _build_panel(settings, sessions, scheduler, bot)
+            panel = _build_panel(settings, sessions, scheduler, bot, unifi, retail)
 
             logger.info(
                 "Tracker running: regions=%s, catalog every %ss, hot poll every %ss",
@@ -289,6 +289,8 @@ def _build_panel(
     sessions: async_sessionmaker[AsyncSession],
     scheduler: Scheduler,
     bot: TrackerBot | None,
+    unifi: UnifiService | None = None,
+    retail: RetailService | None = None,
 ) -> PanelServer | None:
     if not settings.panel.enabled:
         return None
@@ -297,6 +299,16 @@ def _build_panel(
         return None
     from tracker.panel.api import PanelDeps, create_app
     from tracker.panel.server import PanelServer
+    from tracker.watching import Resolved, resolve_listings
+
+    async def resolve(text: str, region: str | None) -> Resolved:
+        return await resolve_listings(
+            sessions,
+            text,
+            region,
+            poll_unifi=unifi.poll_product if unifi is not None else None,
+            add_retail_url=retail.add_url if retail is not None else None,
+        )
 
     deps = PanelDeps(
         settings=settings,
@@ -304,6 +316,8 @@ def _build_panel(
         started_at=datetime.now(UTC),
         scheduler=scheduler,
         decide_guild=bot.apply_guild_decision if bot is not None else None,
+        resolve=resolve,
+        owner_ids=(lambda: bot.owner_ids) if bot is not None else None,
     )
     try:
         app = create_app(deps)

@@ -176,6 +176,7 @@ function lineChart(series, { height = 200, format = (v) => v, labels = [] } = {}
 const NAV = [
   ["#/", "Overview"],
   ["#/opportunities", "Opportunities"],
+  ["#/watchlist", "Watchlist"],
   ["#/radar", "Radar"],
   ["#/servers", "Servers"],
   ["#/audit", "Audit log"],
@@ -485,6 +486,272 @@ async function radarPage(params) {
   shell(h("div", {}, tabs, feed), "Radar", "Newest first · refreshes every 30s");
 }
 
+// ── watchlist ────────────────────────────────────────────────────────────
+
+function dollarsToCents(text) {
+  const value = String(text || "").replace(/[$,\s]/g, "");
+  if (!value) return null;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) throw new Error("Enter a price like 249.99");
+  return Math.round(number * 100);
+}
+
+// Checkboxes for alert types. `selected` null = server defaults (when allowed).
+function kindPicker(keys, selected, { allowDefaults = true, defaults = [] } = {}) {
+  const useDefaults = h("input", { type: "checkbox" });
+  useDefaults.checked = allowDefaults && selected === null;
+  const boxes = Object.entries(keys).map(([key, label]) => {
+    const box = h("input", { type: "checkbox", value: key });
+    box.checked = selected ? selected.includes(key) : defaults.includes(key);
+    return [box, h("label", { class: "check" }, box, label)];
+  });
+  const grid = h("div", { class: "checks" }, boxes.map(([, label]) => label));
+  const sync = () => { grid.hidden = useDefaults.checked; };
+  useDefaults.addEventListener("change", sync);
+  sync();
+  const el = h("div", {},
+    allowDefaults ? h("label", { class: "check" }, useDefaults, "Use this server's defaults") : null,
+    grid);
+  return {
+    el,
+    value: () => (allowDefaults && useDefaults.checked ? null : boxes.filter(([b]) => b.checked).map(([b]) => b.value)),
+  };
+}
+
+function kindsText(kinds, keys) {
+  if (kinds === null || kinds === undefined) return h("span", { class: "muted" }, "defaults");
+  if (!kinds.length) return h("span", { class: "muted" }, "none");
+  return h("div", { class: "row" }, kinds.map((k) => h("span", { class: "pill neutral" }, keys[k] || k)));
+}
+
+function mutedText(until) {
+  if (!until || new Date(until) <= new Date()) return null;
+  return h("span", { class: "pill warn", title: new Date(until).toLocaleString() }, `muted ${when(until).textContent.replace(/^in /, "")}`);
+}
+
+async function mutate(path, method, body, done) {
+  try {
+    const result = await api(path, { method, body });
+    if (done) toast(typeof done === "function" ? done(result) : done);
+    route();
+    return result;
+  } catch (error) { handleError(error); return null; }
+}
+
+async function watchlistPage() {
+  const data = await api("/api/watchlist");
+  const keys = data.alert_keys;
+  const mine = data.items.filter((w) => w.owner);
+  const members = data.items.filter((w) => !w.owner);
+  const selected = new Set();
+
+  // Add form
+  const query = h("input", { type: "text", placeholder: "SKU, product name, or store link", "aria-label": "Product to watch", class: "grow" });
+  const region = h("select", { "aria-label": "Region" }, h("option", { value: "" }, "All regions"), data.regions.map((r) => h("option", { value: r }, r.toUpperCase())));
+  const target = h("input", { type: "text", inputmode: "decimal", placeholder: "Target price (optional)", "aria-label": "Target price" });
+  const picker = kindPicker(keys, null);
+  const error = h("div", { class: "error" });
+  const addButton = h("button", { class: "primary", type: "submit" }, "Add to watchlist");
+  const addForm = h("form", {
+    class: "grid",
+    onsubmit: async (event) => {
+      event.preventDefault();
+      error.textContent = "";
+      if (!query.value.trim()) { error.textContent = "Enter a SKU, product name, or store link."; return; }
+      let cents;
+      try { cents = dollarsToCents(target.value); } catch (err) { error.textContent = err.message; return; }
+      addButton.disabled = true;
+      try {
+        const result = await api("/api/watchlist", { method: "POST", body: { query: query.value.trim(), region: region.value || null, max_price_cents: cents, kinds: picker.value() } });
+        toast(`Watching ${result.listings} listing(s)${result.created < result.listings ? " (some updated)" : ""}.`);
+        route();
+      } catch (err) {
+        if (err instanceof AuthError) return loginView("Your session ended. Log in again.");
+        error.textContent = err.message;
+      } finally { addButton.disabled = false; }
+    },
+  }, h("div", { class: "row" }, query, region, target, addButton), h("details", {}, h("summary", {}, "Alert types"), picker.el), error);
+
+  const subscribe = h("input", { type: "checkbox" });
+  subscribe.checked = data.subscribed;
+  subscribe.addEventListener("change", () => mutate("/api/subscription", "POST", { subscribed: subscribe.checked }, subscribe.checked ? "You'll be pinged for every important alert." : "Stopped pinging you for every alert."));
+
+  // Bulk bar
+  const count = h("span", { class: "muted" }, "0 selected");
+  const bulk = (action, hours) => async () => {
+    if (!selected.size) return toast("Select some watches first.", "bad");
+    if (action === "remove" && !confirm(`Remove ${selected.size} watch(es)?`)) return;
+    await mutate("/api/watches/bulk", "POST", { ids: [...selected], action, hours }, (r) => `${r.count} watch(es) ${action === "remove" ? "removed" : action === "mute" ? "muted" : "unmuted"}.`);
+  };
+  const bulkBar = h("div", { class: "row bulkbar" }, count,
+    h("button", { onclick: bulk("mute", 24) }, "Mute 24h"),
+    h("button", { onclick: bulk("mute", 168) }, "Mute 7 days"),
+    h("button", { onclick: bulk("unmute") }, "Unmute"),
+    h("button", { class: "danger", onclick: bulk("remove") }, "Remove"));
+  const tick = (id, box) => { if (box.checked) selected.add(id); else selected.delete(id); count.textContent = `${selected.size} selected`; };
+
+  const editRow = (w, tr) => {
+    const price = h("input", { type: "text", inputmode: "decimal", value: w.max_price_cents ? (w.max_price_cents / 100).toFixed(2) : "", placeholder: "No target", "aria-label": "Target price" });
+    const kinds = kindPicker(keys, w.kinds);
+    const err = h("div", { class: "error" });
+    const editor = h("tr", { class: "editor" }, h("td", { colspan: 7 },
+      h("div", { class: "grid" },
+        h("label", {}, "Only ping at or below ", price),
+        kinds.el,
+        err,
+        h("div", { class: "row" },
+          h("button", { class: "primary", onclick: async () => {
+            let cents;
+            try { cents = dollarsToCents(price.value); } catch (e) { err.textContent = e.message; return; }
+            await mutate(`/api/watches/${w.watch_id}`, "PATCH", { max_price_cents: cents, kinds: kinds.value() }, "Watch updated.");
+          } }, "Save"),
+          h("button", { onclick: () => editor.remove() }, "Cancel")))));
+    tr.after(editor);
+  };
+
+  const prioritySelect = (w) => {
+    const select = h("select", { "aria-label": "Check priority" }, ["high", "normal", "low"].map((p) => h("option", { value: p }, p)));
+    select.value = w.listing.priority;
+    select.addEventListener("change", () => mutate(`/api/listings/${w.listing.id}/priority`, "POST", { priority: select.value }, `Priority set to ${select.value}.`));
+    return select;
+  };
+
+  const myTable = mine.length ? h("div", { class: "table-wrap" }, h("table", {},
+    h("thead", {}, h("tr", {}, ["", "Product", "Store", "Price", "Alerts", "Priority", ""].map((label, i) => h("th", { class: i === 3 ? "num" : "" }, label)))),
+    h("tbody", {}, mine.map((w) => {
+      const box = h("input", { type: "checkbox", "aria-label": `Select ${w.listing.sku}` });
+      box.addEventListener("change", () => tick(w.watch_id, box));
+      const muted = mutedText(w.muted_until);
+      const tr = h("tr", {},
+        h("td", {}, box),
+        h("td", {}, productLink(w.listing.variant_id, w.listing.sku), h("div", { class: "muted" }, w.listing.name),
+          w.flip_net_cents !== null ? h("div", {}, "Flip ", signedMoney(w.flip_net_cents)) : null),
+        h("td", {}, h("div", { class: "row" }, `${w.listing.source === "unifi" ? "" : `${w.listing.source} `}${w.listing.region.toUpperCase()}`, statusPill(w.listing.status, w.listing.delisted), muted)),
+        h("td", { class: "num" }, money(w.listing.price_cents, w.listing.currency),
+          w.max_price_cents ? h("div", { class: "muted" }, `ping ≤ ${money(w.max_price_cents)}`) : null),
+        h("td", {}, kindsText(w.kinds, keys)),
+        h("td", {}, prioritySelect(w)),
+        h("td", {}, h("div", { class: "row actions" },
+          h("button", { onclick: (e) => editRow(w, e.target.closest("tr")) }, "Edit"),
+          muted ? h("button", { onclick: () => mutate(`/api/watches/${w.watch_id}`, "PATCH", { mute_hours: 0 }, "Unmuted.") }, "Unmute")
+            : h("button", { title: "No pings for 24 hours", onclick: () => mutate(`/api/watches/${w.watch_id}`, "PATCH", { mute_hours: 24 }, "Muted for 24 hours.") }, "Mute"),
+          h("button", { class: "danger", onclick: () => confirm(`Stop watching ${w.listing.sku} ${w.listing.region.toUpperCase()}?`) && mutate(`/api/watches/${w.watch_id}`, "DELETE", undefined, "Removed.") }, "Remove"))));
+      return tr;
+    })))) : h("div", { class: "empty" }, "You aren't watching anything yet. Add a product above, or create a rule below.");
+
+  // Rules
+  const rulesCard = await rulesSection(data, keys);
+
+  const memberTable = table([
+    { label: "Product", cell: (w) => h("div", {}, productLink(w.listing.variant_id, w.listing.sku), h("div", { class: "muted" }, w.listing.name)) },
+    { label: "Store", cell: (w) => w.listing.region.toUpperCase() },
+    { label: "Member", cell: (w) => h("span", { class: "mono" }, w.user_id) },
+    { label: "Target", num: true, cell: (w) => (w.max_price_cents ? `≤ ${money(w.max_price_cents)}` : "—") },
+    { label: "Added", cell: (w) => when(w.created_at) },
+    { label: "", cell: (w) => h("button", { class: "danger", onclick: () => confirm("Remove this member's watch?") && mutate(`/api/watches/${w.watch_id}`, "DELETE", undefined, "Removed.") }, "Remove") },
+  ], members, "No members are watching anything.");
+
+  const content = h("div", { class: "grid" },
+    data.owner_configured ? null : h("div", { class: "card note-warn" }, "Set DISCORD_OWNER_IDS in .env so watches made here can ping your Discord account."),
+    h("div", { class: "card" }, h("h2", {}, "Add to watchlist"),
+      h("p", { class: "muted" }, "Paste a UniFi, Amazon, Best Buy, B&H, or Newegg link, or type a SKU or name. You'll be pinged in your home Discord server."),
+      addForm,
+      h("label", { class: "check spaced" }, subscribe, `Ping me for every important alert (back in stock, Early Access, new, deals) · ${data.subscribers} subscribed in total`)),
+    h("div", { class: "card" }, h("div", { class: "row spread" }, h("h2", {}, `My watches (${mine.length})`), mine.length ? bulkBar : null), myTable),
+    rulesCard,
+    h("div", { class: "card" }, h("h2", {}, `Members' watches (${members.length})`), memberTable));
+  shell(content, "Watchlist", "What you're tracking, how you're alerted, and standing rules");
+}
+
+async function rulesSection(data, keys) {
+  const regionsBoxes = data.regions.map((r) => { const b = h("input", { type: "checkbox", value: r }); return [b, h("label", { class: "check" }, b, r.toUpperCase())]; });
+  const name = h("input", { type: "text", placeholder: "Rule name, e.g. Cheap cameras", "aria-label": "Rule name", maxlength: 80 });
+  const text = h("input", { type: "text", placeholder: "Text in SKU or name (e.g. G6, Pro Max)", "aria-label": "Text to match", maxlength: 80 });
+  const category = h("select", { "aria-label": "Category" }, h("option", { value: "" }, "Any category"));
+  api("/api/categories").then((c) => {
+    category.append(
+      h("optgroup", { label: "Families" }, c.groups.map((g) => h("option", { value: g.value }, g.label))),
+      h("optgroup", { label: "Categories" }, c.categories.map((x) => h("option", { value: x.value }, `${x.label} (${x.count})`))));
+  }).catch(handleError);
+  const maxPrice = h("input", { type: "text", inputmode: "decimal", placeholder: "Max price (optional)", "aria-label": "Max price" });
+  const minProfit = h("input", { type: "text", inputmode: "decimal", placeholder: "Min credible profit (optional)", "aria-label": "Minimum credible profit" });
+  const kinds = kindPicker(keys, null, { allowDefaults: false, defaults: data.rule_default_kinds });
+  const preview = h("div", { class: "muted" }, "Fill in what to match to see what it covers.");
+  const error = h("div", { class: "error" });
+  let timer = null;
+  const refreshPreview = () => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const regions = regionsBoxes.filter(([b]) => b.checked).map(([b]) => b.value).join(",");
+      if (!text.value.trim() && !category.value.trim() && !regions) { preview.textContent = "Fill in what to match to see what it covers."; return; }
+      try {
+        const r = await api(`/api/rules/preview?query=${encodeURIComponent(text.value.trim())}&category=${encodeURIComponent(category.value.trim())}&regions=${encodeURIComponent(regions)}`);
+        preview.replaceChildren(`Covers ${r.count} product(s) today, plus any new ones that match.`, r.sample.length ? h("div", { class: "mono" }, r.sample.join(" · ")) : null);
+      } catch (e) { handleError(e); }
+    }, 300);
+  };
+  text.addEventListener("input", refreshPreview);
+  category.addEventListener("change", refreshPreview);
+  regionsBoxes.forEach(([b]) => b.addEventListener("change", refreshPreview));
+
+  const form = h("form", {
+    class: "grid",
+    onsubmit: async (event) => {
+      event.preventDefault();
+      error.textContent = "";
+      let max, min;
+      try { max = dollarsToCents(maxPrice.value); } catch (e) { error.textContent = e.message; return; }
+      try { min = minProfit.value.trim() ? Math.round(Number(minProfit.value.replace(/[$,\s]/g, "")) * 100) : null; } catch { min = null; }
+      if (min !== null && !(min >= 0)) { error.textContent = "Minimum profit must be a number."; return; }
+      const chosen = kinds.value();
+      if (!chosen.length) { error.textContent = "Pick at least one alert type."; return; }
+      const body = { name: name.value.trim() || text.value.trim() || category.value.trim() || "Rule", query: text.value.trim() || null, category: category.value.trim() || null, regions: regionsBoxes.filter(([b]) => b.checked).map(([b]) => b.value), kinds: chosen, max_price_cents: max, min_profit_cents: min };
+      try {
+        await api("/api/rules", { method: "POST", body });
+        toast(`Rule "${body.name}" created.`);
+        route();
+      } catch (e) {
+        if (e instanceof AuthError) return loginView("Your session ended. Log in again.");
+        error.textContent = e.message;
+      }
+    },
+  },
+  h("div", { class: "row" }, name, text, category),
+  h("div", { class: "row" }, h("span", { class: "muted" }, "Regions:"), regionsBoxes.map(([, l]) => l), h("span", { class: "muted" }, "(none = any)")),
+  h("div", { class: "row" }, maxPrice, minProfit),
+  kinds.el, preview, error,
+  h("div", {}, h("button", { class: "primary", type: "submit" }, "Create rule")));
+
+  const describe = (r) => [
+    r.query ? `text "${r.query}"` : null,
+    r.category ? `category "${r.category}"` : null,
+    r.regions.length ? r.regions.join("/").toUpperCase() : "any region",
+    r.max_price_cents ? `≤ ${money(r.max_price_cents)}` : null,
+    r.min_profit_cents !== null ? `credible profit ≥ ${money(r.min_profit_cents)}` : null,
+  ].filter(Boolean).join(" · ");
+
+  const list = data.rules.length ? h("div", { class: "grid" }, data.rules.map((r) => {
+    const enabled = h("input", { type: "checkbox" });
+    enabled.checked = r.enabled;
+    enabled.addEventListener("change", () => mutate(`/api/rules/${r.id}`, "PATCH", { enabled: enabled.checked }, enabled.checked ? "Rule on." : "Rule off."));
+    const muted = mutedText(r.muted_until);
+    return h("div", { class: "rule" },
+      h("div", { class: "row spread" },
+        h("div", {}, h("strong", {}, r.name), r.owner ? null : h("span", { class: "muted mono" }, ` · ${r.user_id}`)),
+        h("div", { class: "row" },
+          muted,
+          h("label", { class: "check" }, enabled, "On"),
+          muted ? h("button", { onclick: () => mutate(`/api/rules/${r.id}`, "PATCH", { mute_hours: 0 }, "Unmuted.") }, "Unmute")
+            : h("button", { onclick: () => mutate(`/api/rules/${r.id}`, "PATCH", { mute_hours: 24 }, "Muted for 24 hours.") }, "Mute 24h"),
+          h("button", { class: "danger", onclick: () => confirm(`Delete rule "${r.name}"?`) && mutate(`/api/rules/${r.id}`, "DELETE", undefined, "Rule deleted.") }, "Delete"))),
+      h("div", { class: "muted" }, describe(r)),
+      kindsText(r.kinds, keys));
+  })) : h("div", { class: "empty" }, "No rules yet. A rule pings you for anything that matches, including products that don't exist yet.");
+
+  return h("div", { class: "card" }, h("h2", {}, `Rules (${data.rules.length})`), list,
+    h("details", { class: "spaced" }, h("summary", {}, "New rule"), form));
+}
+
 async function serversPage() {
   const data = await api("/api/servers");
   const decide = (g, status) => async () => {
@@ -532,6 +799,7 @@ async function route() {
     if (parts[0] === "opportunities") await opportunitiesPage(params);
     else if (parts[0] === "product" && parts[1]) await productPage(decodeURIComponent(parts[1]));
     else if (parts[0] === "radar") { await radarPage(params); every(30000, () => radarPage(params).catch(handleError)); }
+    else if (parts[0] === "watchlist") await watchlistPage();
     else if (parts[0] === "servers") await serversPage();
     else if (parts[0] === "audit") await auditPage();
     else { await overviewPage(); every(30000, () => overviewPage().catch(handleError)); }

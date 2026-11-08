@@ -17,7 +17,7 @@ from tracker.alerts import AlertPlan
 from tracker.audit import audit, describe, recent_audit
 from tracker.bot.cleanup import cleanup_messages
 from tracker.bot.embeds import KIND_STYLE, alert_content, alert_embed, source_name, status_text
-from tracker.bot.views import alert_view
+from tracker.bot.views import WatchManager, alert_view, watches_embed
 from tracker.db.models import Listing, MarketComp, Product, Valuation, Variant
 from tracker.domain import EventKind, Priority, SourceKey, StockStatus, format_cents
 from tracker.guilds import (
@@ -39,7 +39,6 @@ from tracker.queries import (
     OpportunityRow,
     add_watches,
     forget_user,
-    listings_for_url,
     opportunities,
     recent_observations,
     remove_watches,
@@ -48,7 +47,6 @@ from tracker.queries import (
     set_priority,
     set_subscribed,
     tracker_stats,
-    unifi_listings_for_slug,
     upcoming_restocks,
     user_watches,
     variant_comps,
@@ -56,7 +54,8 @@ from tracker.queries import (
 )
 from tracker.services.unifi import slug_from_url
 from tracker.settings import MarketSettings
-from tracker.sources.web import detect_source, parse_money
+from tracker.sources.web import parse_money
+from tracker.watching import resolve_listings, user_watch_rows
 
 if TYPE_CHECKING:
     from tracker.bot.client import TrackerBot
@@ -386,35 +385,14 @@ class TrackerCommands(commands.Cog):
 
     async def _resolve(self, text: str, region: str | None) -> tuple[list[ListingRow], str | None]:
         """A SKU, product name, or store URL → listings (fetching unknown URLs on demand)."""
-        text = text.strip()
-        if text.lower().startswith(("http://", "https://")):
-            source = detect_source(text)
-            if source is None:
-                return [], "That URL isn't from a supported store."
-            if source is SourceKey.UNIFI:
-                match = _UNIFI_URL_RE.search(text)
-                if not match:
-                    return [], "That doesn't look like a UniFi store product URL."
-                url_region, slug = match["region"], match["slug"]
-                async with self.ctx.sessions() as session:
-                    rows = await unifi_listings_for_slug(session, url_region, slug)
-                if not rows:
-                    await self.ctx.unifi.poll_product(url_region, slug)
-                    async with self.ctx.sessions() as session:
-                        rows = await unifi_listings_for_slug(session, url_region, slug)
-                return rows, None if rows else "Couldn't load that product page."
-            await self.ctx.retail.add_url(text, source)
-            async with self.ctx.sessions() as session:
-                return await listings_for_url(session, text), None
-
-        async with self.ctx.sessions() as session:
-            variant = await resolve_variant(session, text)
-            if variant is None:
-                return [], f"No product matches `{text}`."
-            rows = await variant_listings(session, variant.id, region)
-        if not rows:
-            return [], f"`{variant.sku}` isn't listed in region `{region}`."
-        return rows, None
+        resolved = await resolve_listings(
+            self.ctx.sessions,
+            text,
+            region,
+            poll_unifi=self.ctx.unifi.poll_product,
+            add_retail_url=self.ctx.retail.add_url if self.ctx.retail is not None else None,
+        )
+        return resolved.rows, resolved.error
 
     # ── autocomplete ──────────────────────────────────────────────────────
 
@@ -499,21 +477,21 @@ class TrackerCommands(commands.Cog):
         )
         await interaction.response.send_message(message, ephemeral=True)
 
-    @app_commands.command(description="List the products you're watching")
+    @app_commands.command(description="See and manage your watches (remove, mute, unmute)")
     async def watches(self, interaction: discord.Interaction[Any]) -> None:
+        user_id = str(interaction.user.id)
         async with self.ctx.sessions() as session:
-            rows = await user_watches(session, str(interaction.user.id))
+            rows = await user_watch_rows(session, user_id)
         if not rows:
             await interaction.response.send_message(
                 "You aren't watching anything yet. Try `/watch`.", ephemeral=True
             )
             return
-        embed = discord.Embed(
-            title=f"🔔 Your watches ({len(rows)})",
-            description=_paginate([_row_line(r) for r in rows]),
-            color=0x5865F2,
+        await interaction.response.send_message(
+            embed=watches_embed(rows, datetime.now(UTC)),
+            view=WatchManager(self.bot, user_id, rows),
+            ephemeral=True,
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(
         description="Get pinged for every important alert (back in stock, EA, new)"

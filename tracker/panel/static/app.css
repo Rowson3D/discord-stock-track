@@ -206,3 +206,22 @@ dl.kv dd { margin: 0; font-variant-numeric: tabular-nums; }
   .main { padding: 16px; }
   .feed .event { grid-template-columns: 1fr; gap: 2px; }
 }
+
+/* watchlist */
+.row .grow { flex: 1 1 240px; min-width: 0; }
+.row.spread { justify-content: space-between; }
+.checks { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 8px 0; }
+label.check { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+label.check input { width: auto; padding: 0; }
+.spaced { margin-top: 14px; display: flex; }
+details.spaced { display: block; }
+details summary { cursor: pointer; color: var(--accent); margin: 6px 0; }
+.bulkbar { gap: 6px; }
+.bulkbar button { padding: 4px 10px; font-size: 13px; }
+td .row button { padding: 4px 10px; font-size: 13px; }
+td select { padding: 3px 8px; font-size: 13px; }
+tr.editor td { background: var(--surface-2); }
+.rule { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; display: grid; gap: 6px; }
+.note-warn { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
+.row.actions { flex-wrap: nowrap; gap: 4px; }
+td button { white-space: nowrap; }

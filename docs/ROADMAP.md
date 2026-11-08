@@ -311,6 +311,21 @@ percentile $226.84) nets about −$5 after fees and shipping, so not a flip at M
 - Next: the Tauri Windows wrapper (needs Rust), a container-safe binding for Docker, and
   ledger, budget, and ops pages. See [PANEL.md](PANEL.md).
 
+**2026-11-08: Watchlist manager**
+- Watches gain alert types (`kinds`; NULL keeps the server defaults) and `muted_until`.
+  New `watch_rules`: standing watches by text, category (prefix families such as
+  `physical-security`), regions, max price, and minimum credible profit. Migration 0011.
+- Alert routing (`tracker/watching.py`): per-watch alert types, target price, and mute;
+  muted subscribers skipped; rule matches ping their owner and promote the alert to the
+  alert channel. Rules only see credible (flip) profit.
+- Panel **Watchlist** page: add by SKU, name, or store link; edit, mute, priority, bulk;
+  rules with a live coverage preview and a category dropdown; members' watches (remove
+  only); every change audited. The panel uses the bot's owner when `.env` has none.
+- Discord `/watches`: picker plus Remove, Mute 24h, Unmute (only for the person who ran it).
+- Static panel files revalidate on every load, so updates never run stale code.
+- Next: discovery (candidates from Best Buy, Slickdeals, and Reddit, checked against eBay,
+  with a Discovery inbox).
+
 ## 5. Risks and open questions
 
 | Risk | Mitigation |

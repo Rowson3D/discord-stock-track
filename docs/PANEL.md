@@ -27,12 +27,15 @@ Check the configuration any time with `uv run tracker panel status` (it never pr
 |---|---|
 | **Overview** | Credible flips, active deals, events, uptime; stock counts per store region; valuation mix; scheduler jobs (runs, failures, next run); which sources are configured |
 | **Opportunities** | Four views: **credible flips** (real evidence only), **sold-out market** (store sold out; eBay asking prices are the live market; restock candidates), **hyped in stock** (in stock but listed far above retail; asking prices only), and everything valued |
+| **Watchlist** | Everything you track in one place. Add by SKU, name, or any supported store link; pick alert types per item (back in stock, Early Access, price drop, deal, new, restock date, sold out); set a target price; mute; change check priority; bulk mute or remove. **Rules** ping you for anything matching text, category, region, price, or credible profit, including products that don't exist yet, with a live preview of what they cover. Also: "ping me for every important alert", and members' watches (remove only). |
 | **Product** | Verdict, profit breakdown, every region's status and price, restock count, sell-out speed, out-of-stock duration, daily eBay price and seller charts, recent events |
 | **Radar** | Every event, newest first, filterable (deals, restocks, new, Early Access, sold out, price) |
 | **Servers** | Approve or block Discord servers (blocking makes the bot leave) |
 | **Audit log** | Every admin action from Discord or the panel, including panel logins and failed attempts |
 
 New deal alerts pop up as toasts while the panel is open.
+
+Watches and rules you make in the panel belong to your Discord account (the owner) and ping you in your home server, the same as `/watch`. If `DISCORD_OWNER_IDS` isn't set, the panel uses the owner the bot learns from Discord.
 
 ## Reach it from your phone or another PC (Tailscale)
 

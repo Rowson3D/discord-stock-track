@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -35,6 +35,7 @@ from tracker.guilds import GuildStatus, decide, list_guilds
 from tracker.history import ebay_trend, stock_history
 from tracker.outbox import load_events
 from tracker.panel.auth import LoginLimiter, SessionStore, TotpVerifier
+from tracker.panel.watchlist import Resolver, add_watchlist_routes
 from tracker.queries import opportunities, resolve_variant, search_variants, tracker_stats
 from tracker.scheduler import Scheduler
 from tracker.settings import Settings
@@ -59,6 +60,10 @@ class PanelDeps:
     scheduler: Scheduler | None = None
     # The bot's decision hook (syncs commands / leaves the server); DB-only when absent.
     decide_guild: GuildDecider | None = None
+    # Resolves SKUs, names, and store links (fetching new links); catalog-only when absent.
+    resolve: Resolver | None = None
+    # Current owner IDs (the bot learns them from Discord when .env doesn't list any).
+    owner_ids: Callable[[], Iterable[str]] | None = None
     clock: Callable[[], float] = field(default=time.time)
 
 
@@ -140,7 +145,13 @@ def create_app(deps: PanelDeps) -> FastAPI:
         h.lower() for h in panel.allowed_hosts
     }
     logins = {login.lower() for login in panel.tailscale_logins}
-    owner_id = deps.settings.discord.owner_ids[0] if deps.settings.discord.owner_ids else None
+
+    def owner_id() -> str | None:
+        configured = deps.settings.discord.owner_ids
+        if configured:
+            return str(configured[0])
+        learned = sorted(deps.owner_ids()) if deps.owner_ids is not None else []
+        return learned[0] if learned else None
 
     app = FastAPI(
         title="FlipScout panel",
@@ -182,6 +193,9 @@ def create_app(deps: PanelDeps) -> FastAPI:
         response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
         if request.url.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
+        elif request.url.path.startswith("/static/"):
+            # Revalidate every load (cheap: ETag), so an update never runs stale code.
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
     def owner(request: Request) -> str:
@@ -194,7 +208,7 @@ def create_app(deps: PanelDeps) -> FastAPI:
             await audit(
                 session,
                 action,
-                actor_id=owner_id,
+                actor_id=owner_id(),
                 actor_name=f"owner (panel, {client})"[:100],
                 **kwargs,
             )
@@ -575,10 +589,10 @@ def create_app(deps: PanelDeps) -> FastAPI:
         status = GuildStatus(body.status)
         actor_name = f"owner (panel, {client})"[:100]
         if deps.decide_guild is not None:
-            await deps.decide_guild(guild_id, status, owner_id, actor_name)
+            await deps.decide_guild(guild_id, status, owner_id(), actor_name)
         else:
             async with deps.sessions() as session, session.begin():
-                await decide(session, guild_id, status, actor_id=owner_id, actor_name=actor_name)
+                await decide(session, guild_id, status, actor_id=owner_id(), actor_name=actor_name)
         return {"guild_id": guild_id, "status": status.value}
 
     @app.get("/api/audit")
@@ -605,6 +619,17 @@ def create_app(deps: PanelDeps) -> FastAPI:
                 }
             )
         return {"items": items}
+
+    add_watchlist_routes(
+        app,
+        sessions=deps.sessions,
+        settings=deps.settings,
+        owner=owner,
+        record=record,
+        owner_id=owner_id,
+        resolve=deps.resolve,
+        clock=lambda: datetime.fromtimestamp(deps.clock(), UTC),
+    )
 
     # ── web app ──────────────────────────────────────────────────────────
 
