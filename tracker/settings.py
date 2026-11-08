@@ -307,6 +307,43 @@ class MarketSettings(BaseSettings):
     deal_min_roi: float = Field(default=0.15, ge=0)
 
 
+class DiscoverySettings(BaseSettings):
+    """Finding hot products beyond the UniFi catalog (docs/DISCOVERY.md)."""
+
+    model_config = _config("DISCOVERY_")
+
+    enabled: bool = True
+    # Share of eBay's 5,000 daily Browse calls that discovery may spend.
+    daily_ebay_calls: int = Field(default=400, ge=0, le=4000)
+    check_interval_seconds: float = Field(default=600, ge=60)
+    checks_per_run: int = Field(default=4, ge=1, le=50)
+    min_profit_cents: int = Field(default=2500, ge=0)
+    min_roi: float = Field(default=0.15, ge=0)
+    min_sellers: int = Field(default=3, ge=1)
+    trial_days: int = Field(default=14, ge=1, le=90)
+    recheck_days: float = Field(default=3, ge=0.5)
+    # Below this heat, "checked" candidates stop being rechecked.
+    min_heat: float = Field(default=0.5, ge=0)
+
+
+class BestBuySettings(BaseSettings):
+    """Best Buy Products API (free key from developer.bestbuy.com). Off without a key."""
+
+    model_config = _config("BESTBUY_")
+
+    api_key: SecretStr | None = None
+    api_base: str = "https://api.bestbuy.com"
+    # Category IDs (e.g. abcat0700000) for sold-out scans; trending works without any.
+    categories: CommaList = Field(default_factory=list)
+    interval_minutes: float = Field(default=60, ge=10)
+
+    _split = field_validator("categories", mode="before")(_split_commas)
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.api_key and self.api_key.get_secret_value())
+
+
 class PanelSettings(BaseSettings):
     """Owner control panel (web). Off until a TOTP secret exists (`tracker panel setup`).
 
@@ -360,6 +397,8 @@ class Settings:
         self.ebay = EbaySettings(_env_file=env_file)  # type: ignore[call-arg]
         self.market = MarketSettings(_env_file=env_file)  # type: ignore[call-arg]
         self.panel = PanelSettings(_env_file=env_file)  # type: ignore[call-arg]
+        self.discovery = DiscoverySettings(_env_file=env_file)  # type: ignore[call-arg]
+        self.bestbuy = BestBuySettings(_env_file=env_file)  # type: ignore[call-arg]
 
     def secret_values(self) -> list[str]:
         """Every configured secret, so logging can mask it wherever it appears."""
@@ -368,6 +407,7 @@ class Settings:
             self.ebay.client_secret,
             self.sms.auth_token,
             self.panel.totp_secret,
+            self.bestbuy.api_key,
         )
         return [c.get_secret_value() for c in candidates if c and c.get_secret_value()]
 

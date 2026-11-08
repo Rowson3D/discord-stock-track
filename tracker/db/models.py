@@ -384,6 +384,98 @@ class WatchRule(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
+class Candidate(Base):
+    """A product discovery noticed somewhere else (see docs/DISCOVERY.md). Aggregates only."""
+
+    __tablename__ = "candidates"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # model:<compact model> | upc:<digits> | title:<normalized words>
+    key: Mapped[str] = mapped_column(String(160), unique=True)
+    title: Mapped[str] = mapped_column(String(300))
+    brand: Mapped[str | None] = mapped_column(String(100))
+    model: Mapped[str | None] = mapped_column(String(80))
+    upc: Mapped[str | None] = mapped_column(String(20))
+    category: Mapped[str | None] = mapped_column(String(200))
+    # new | checked | promising | tracked | ignored | dropped
+    status: Mapped[str] = mapped_column(String(16), default="new", server_default="new", index=True)
+    origin: Mapped[str] = mapped_column(String(32))
+    # Where to buy it, as last reported by a retail source.
+    retail_cents: Mapped[int | None] = mapped_column(Integer)
+    regular_cents: Mapped[int | None] = mapped_column(Integer)
+    retail_url: Mapped[str | None] = mapped_column(String(500))
+    retail_source: Mapped[str | None] = mapped_column(String(32))
+    available: Mapped[bool | None] = mapped_column(Boolean)
+    heat: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
+    signal_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    first_seen_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    next_check_at: Mapped[datetime | None] = mapped_column(UTCDateTime, index=True)
+    # Latest eBay reading (aggregates) and the honest estimate built from it.
+    ebay_query: Mapped[str | None] = mapped_column(String(200))
+    ebay_sellers: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    ebay_listings: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    ebay_p25_cents: Mapped[int | None] = mapped_column(Integer)
+    ebay_median_cents: Mapped[int | None] = mapped_column(Integer)
+    ebay_low_cents: Mapped[int | None] = mapped_column(Integer)
+    resale_cents: Mapped[int | None] = mapped_column(Integer)
+    net_cents: Mapped[int | None] = mapped_column(Integer)
+    roi: Mapped[float | None] = mapped_column(Float)
+    confidence: Mapped[str] = mapped_column(String(8), default="none", server_default="none")
+    capped: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    score: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
+    trial_until: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    decided_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+    signals: Mapped[list[CandidateSignal]] = relationship(
+        back_populates="candidate", cascade="all, delete-orphan"
+    )
+
+
+class CandidateSignal(Base):
+    """One source saying a candidate is hot. Repeats update the same row."""
+
+    __tablename__ = "candidate_signals"
+    __table_args__ = (UniqueConstraint("candidate_id", "source", "kind"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    candidate_id: Mapped[int] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), index=True
+    )
+    source: Mapped[str] = mapped_column(String(32))  # bestbuy | manual | reddit | ...
+    kind: Mapped[str] = mapped_column(String(32))  # trending | most_viewed | sold_out | ...
+    title: Mapped[str] = mapped_column(String(300))
+    url: Mapped[str | None] = mapped_column(String(500))
+    price_cents: Mapped[int | None] = mapped_column(Integer)
+    rank: Mapped[int | None] = mapped_column(Integer)
+    times_seen: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    first_seen_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    seen_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+    candidate: Mapped[Candidate] = relationship(back_populates="signals")
+
+
+class CandidateHistory(Base):
+    """One eBay snapshot per candidate per UTC day (aggregates only, like ebay_stats_history)."""
+
+    __tablename__ = "candidate_history"
+    __table_args__ = (UniqueConstraint("candidate_id", "day"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    candidate_id: Mapped[int] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), index=True
+    )
+    day: Mapped[date] = mapped_column(Date)
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    sellers: Mapped[int] = mapped_column(Integer, default=0)
+    listings: Mapped[int] = mapped_column(Integer, default=0)
+    p25_cents: Mapped[int | None] = mapped_column(Integer)
+    median_cents: Mapped[int | None] = mapped_column(Integer)
+    retail_cents: Mapped[int | None] = mapped_column(Integer)
+    net_cents: Mapped[int | None] = mapped_column(Integer)
+
+
 # The audit log is append-only at the database level, not just by convention.
 AUDIT_APPEND_ONLY_DDL = (
     "CREATE TRIGGER IF NOT EXISTS audit_log_no_update BEFORE UPDATE ON audit_log "

@@ -142,6 +142,15 @@ served by `tracker run` on `http://127.0.0.1:8765`. Owner-only, with an authenti
 Set it up once with `uv run tracker panel setup`, then restart. Reach it from your phone over
 Tailscale (`tailscale serve`), never an open port. See [docs/PANEL.md](docs/PANEL.md).
 
+### Discovery
+
+Finds hot products beyond what you track and reads their eBay market honestly: a product
+anyone can still buy at regular price is capped at that price, so only sale prices and
+sold-out items can look profitable. **Check an item** in the owner panel works with no extra
+keys; add a free `BESTBUY_API_KEY` for trending, most-viewed, and sold-out Best Buy products.
+Promising items are rechecked daily for 14 days; **Track** or **Ignore** them in the
+Discovery inbox. See [docs/DISCOVERY.md](docs/DISCOVERY.md).
+
 ### Security Notes
 
 - Secrets live only in the server's `.env`. Log output masks them (and anything shaped like a

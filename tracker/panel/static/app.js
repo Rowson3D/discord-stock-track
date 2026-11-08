@@ -177,6 +177,7 @@ const NAV = [
   ["#/", "Overview"],
   ["#/opportunities", "Opportunities"],
   ["#/watchlist", "Watchlist"],
+  ["#/discovery", "Discovery"],
   ["#/radar", "Radar"],
   ["#/servers", "Servers"],
   ["#/audit", "Audit log"],
@@ -752,6 +753,171 @@ async function rulesSection(data, keys) {
     h("details", { class: "spaced" }, h("summary", {}, "New rule"), form));
 }
 
+// ── discovery ────────────────────────────────────────────────────────────
+
+const DISCOVERY_TABS = [["promising", "Promising"], ["new", "New"], ["checked", "Checked"], ["tracked", "Tracked"], ["ignored", "Ignored"], ["dropped", "Dropped"], ["all", "All"]];
+const SIGNAL_KINDS = { manual: "You checked it", trending: "Trending", most_viewed: "Most viewed", sold_out: "Sold out", big_discount: "Big discount" };
+const STATUS_STYLE = { promising: "good", tracked: "info", new: "neutral", checked: "neutral", ignored: "neutral", dropped: "warn" };
+
+function availabilityPill(available) {
+  if (available === true) return h("span", { class: "pill good" }, "buyable");
+  if (available === false) return h("span", { class: "pill bad" }, "sold out");
+  return null;
+}
+
+function buyCell(c) {
+  if (!c.retail_cents) return h("span", { class: "muted" }, "no store price");
+  const sale = c.regular_cents && c.regular_cents > c.retail_cents;
+  return h("div", {},
+    h("div", { class: "row" }, money(c.retail_cents), availabilityPill(c.available)),
+    sale ? h("div", { class: "muted" }, `reg. ${money(c.regular_cents)} (−${pct(1 - c.retail_cents / c.regular_cents)})`) : null,
+    c.retail_url ? h("a", { href: c.retail_url, target: "_blank", rel: "noopener noreferrer" }, `${c.retail_source || "store"} ↗`) : null);
+}
+
+function ebayCell(c) {
+  if (!c.checked_at) return h("span", { class: "muted" }, "not checked yet");
+  if (!c.ebay_sellers) return h("span", { class: "muted" }, "no matching listings");
+  return h("div", {}, `${c.ebay_sellers} seller(s)`, h("div", { class: "muted" }, `floor ${money(c.ebay_p25_cents)} · median ${money(c.ebay_median_cents)}`));
+}
+
+function estimateCell(c) {
+  if (c.net_cents === null) return h("span", { class: "muted" }, c.checked_at && !c.retail_cents ? "needs a store price" : "—");
+  return h("div", {}, signedMoney(c.net_cents), ` (${pct(c.roi)})`,
+    h("div", { class: "row" }, confidencePill(c.confidence), c.capped ? h("span", { class: "pill warn", title: "Buyable at regular price, so eBay asking prices are capped" }, "capped") : null));
+}
+
+async function decideCandidate(c, action) {
+  if (action === "ignore" && !confirm(`Ignore "${c.title}"? It won't come back even if it trends again.`)) return;
+  try {
+    const r = await api(`/api/discovery/${c.id}/decision`, { method: "POST", body: { action } });
+    toast(action === "track" ? `Tracking.${r.watched ? ` Added ${r.watched} listing(s) to your watchlist.` : ""}${r.note ? ` (${r.note})` : ""}` : action === "ignore" ? "Ignored." : "Restored.");
+    route();
+  } catch (error) { handleError(error); }
+}
+
+async function recheckCandidate(c) {
+  try {
+    await api(`/api/discovery/${c.id}/recheck`, { method: "POST" });
+    toast("Rechecked on eBay.");
+    route();
+  } catch (error) { handleError(error); }
+}
+
+function candidateActions(c) {
+  return h("div", { class: "row actions" },
+    ["new", "checked", "promising", "dropped"].includes(c.status) ? h("button", { class: "primary", onclick: () => decideCandidate(c, "track") }, "Track") : null,
+    c.status !== "ignored" ? h("button", { onclick: () => decideCandidate(c, "ignore") }, "Ignore") : h("button", { onclick: () => decideCandidate(c, "restore") }, "Restore"),
+    c.status !== "ignored" ? h("button", { title: "Read eBay again now (uses 1 call)", onclick: () => recheckCandidate(c) }, "Recheck") : null);
+}
+
+async function discoveryPage(params) {
+  const status = DISCOVERY_TABS.some(([k]) => k === params.get("status")) ? params.get("status") : "promising";
+  const data = await api(`/api/discovery?status=${status}`);
+  if (!data.enabled) {
+    shell(h("div", { class: "card empty" }, "Discovery is off. Set DISCOVERY_ENABLED=true in .env and restart."), "Discovery");
+    return;
+  }
+  const input = h("input", { type: "text", class: "grow", placeholder: "Product name, model, or an Amazon / Best Buy / B&H / Newegg link", "aria-label": "Item to check" });
+  const error = h("div", { class: "error" });
+  const button = h("button", { class: "primary", type: "submit" }, "Check on eBay");
+  const form = h("form", {
+    class: "grid",
+    onsubmit: async (event) => {
+      event.preventDefault();
+      error.textContent = "";
+      if (input.value.trim().length < 2) { error.textContent = "Type a product name or paste a link."; return; }
+      button.disabled = true;
+      button.textContent = "Checking…";
+      try {
+        const r = await api("/api/discovery/check", { method: "POST", body: { text: input.value.trim() } });
+        if (r.message) toast(r.message);
+        location.hash = `#/discovery/${r.id}`;
+      } catch (err) {
+        if (err instanceof AuthError) return loginView("Your session ended. Log in again.");
+        error.textContent = err.message;
+      } finally { button.disabled = false; button.textContent = "Check on eBay"; }
+    },
+  }, h("div", { class: "row" }, input, button), error);
+
+  const t = data.thresholds;
+  const sourceLine = h("div", { class: "row muted" },
+    "Sources:", h("span", { class: `pill ${data.sources.ebay ? "good" : "bad"}` }, data.sources.ebay ? "eBay ready" : "eBay not configured"),
+    h("span", { class: `pill ${data.sources.bestbuy ? "good" : "neutral"}` }, data.sources.bestbuy ? `Best Buy on${data.sources.bestbuy_categories ? ` · ${data.sources.bestbuy_categories} sold-out categories` : ""}` : "Best Buy off (add BESTBUY_API_KEY)"),
+    h("span", {}, `eBay budget today: ${data.budget.used}/${data.budget.limit}`));
+
+  const tabs = h("div", { class: "tabs" }, DISCOVERY_TABS.map(([key, label]) =>
+    h("button", { class: key === status ? "on" : "", onclick: () => { location.hash = `#/discovery?status=${key}`; } }, key === "all" ? label : `${label} (${data.counts[key] || 0})`)));
+
+  const empty = {
+    promising: `Nothing promising yet. An item becomes promising at ${money(t.min_profit_cents)}+ estimated net, ${pct(t.min_roi)}+ ROI, and ${t.min_sellers}+ eBay sellers, then it's rechecked daily for ${t.trial_days} days.`,
+    new: "No new candidates. They arrive from Best Buy (once a key is added) or when you check an item above.",
+  }[status] || "Nothing here.";
+
+  const rows = table([
+    { label: "Item", cell: (c) => h("div", {}, h("a", { href: `#/discovery/${c.id}` }, c.title), h("div", { class: "muted" }, [c.model, c.category].filter(Boolean).join(" · ")), h("div", { class: "row" }, h("span", { class: `pill ${STATUS_STYLE[c.status] || "neutral"}` }, c.status), h("span", { class: "muted" }, `heat ${c.heat}`))) },
+    { label: "Buy", cell: buyCell },
+    { label: "eBay (asking)", cell: ebayCell },
+    { label: "Est. net", cell: estimateCell },
+    { label: "", cell: candidateActions },
+  ], data.items, empty);
+
+  shell(h("div", { class: "grid" },
+    h("div", { class: "card" }, h("h2", {}, "Check an item"),
+      h("p", { class: "muted" }, "FlipScout reads its eBay market now. If you paste a store link, it also uses the store's price and stock to estimate profit honestly."),
+      form, sourceLine),
+    h("div", {}, tabs, h("div", { class: "card" }, rows))),
+  "Discovery", "Hot products beyond your watchlist, with an honest eBay read");
+}
+
+async function candidatePage(id) {
+  const c = await api(`/api/discovery/${encodeURIComponent(id)}`);
+  const notes = [];
+  if (c.capped) notes.push(h("div", { class: "note warn" }, `Capped: it can still be bought at ${money(c.regular_cents || c.retail_cents)}, so eBay asking prices above that plus tax aren't real resale value.`));
+  if (c.available === false) notes.push(h("div", { class: "note" }, "Sold out at the store, so eBay asking prices are the live market. A restock is the buying chance."));
+  if (c.regular_cents && c.retail_cents && c.regular_cents > c.retail_cents) notes.push(h("div", { class: "note" }, `On sale: ${money(c.retail_cents)} vs ${money(c.regular_cents)} regular. Resale is judged against the regular price.`));
+  if (c.net_cents === null && c.checked_at) notes.push(h("div", { class: "note" }, c.retail_cents ? "Not enough matching eBay listings to estimate." : "No store price yet: paste a store link in Check an item to estimate profit."));
+  if (c.net_cents !== null) notes.push(h("div", { class: `note ${c.net_cents > 0 ? "good" : ""}` }, "Estimate: ", signedMoney(c.net_cents), ` (${pct(c.roi)} ROI), ${c.confidence} confidence. It's based on eBay asking prices from ${c.ebay_sellers} seller(s), not sold prices.`));
+  if (c.status === "promising" && c.trial_until) notes.push(h("div", { class: "note" }, "On trial until ", when(c.trial_until), ": rechecked daily, kept only if the profit holds."));
+
+  const hist = c.history;
+  const labels = hist.map((x) => x.day);
+  shell(h("div", { class: "grid" },
+    h("div", { class: "row" }, h("span", { class: `pill ${STATUS_STYLE[c.status] || "neutral"}` }, c.status), candidateActions(c)),
+    h("div", { class: "grid cols-2" },
+      h("div", { class: "card" }, h("h2", {}, "Verdict"), notes.length ? h("div", { class: "verdict" }, notes) : h("div", { class: "empty" }, "Not checked yet.")),
+      h("div", { class: "card" }, h("h2", {}, "Details"),
+        h("dl", { class: "kv" },
+          h("dt", {}, "Model"), h("dd", {}, c.model || "—"),
+          h("dt", {}, "UPC"), h("dd", {}, c.upc || "—"),
+          h("dt", {}, "Buy"), h("dd", {}, buyCell(c)),
+          h("dt", {}, "eBay search"), h("dd", {}, c.ebay_query || "—"),
+          h("dt", {}, "eBay"), h("dd", {}, ebayCell(c)),
+          h("dt", {}, "Heat"), h("dd", {}, `${c.heat} from ${c.signal_count} signal(s)`),
+          h("dt", {}, "First seen"), h("dd", {}, when(c.first_seen_at)),
+          h("dt", {}, "Checked"), h("dd", {}, when(c.checked_at)),
+          h("dt", {}, "Next check"), h("dd", {}, c.next_check_at ? when(c.next_check_at) : "—")))),
+    h("div", { class: "grid cols-2" },
+      h("div", { class: "card" }, h("h2", {}, "eBay prices (daily)"),
+        lineChart([
+          { label: "Floor (25th pct)", values: hist.map((x) => x.p25_cents) },
+          { label: "Median ask", values: hist.map((x) => x.median_cents) },
+          { label: "Store price", values: hist.map((x) => x.retail_cents) },
+        ], { format: (v) => money(v).replace(/\.\d\d$/, ""), labels })),
+      h("div", { class: "card" }, h("h2", {}, "eBay sellers (daily)"),
+        lineChart([{ label: "Distinct sellers", values: hist.map((x) => x.sellers) }], { format: (n) => String(Math.round(n)), labels }))),
+    h("div", { class: "card" }, h("h2", {}, "Signals"),
+      table([
+        { label: "Source", cell: (s) => s.source },
+        { label: "Signal", cell: (s) => SIGNAL_KINDS[s.kind] || s.kind },
+        { label: "Rank", num: true, cell: (s) => s.rank ?? "—" },
+        { label: "Price", num: true, cell: (s) => money(s.price_cents) },
+        { label: "Seen", num: true, cell: (s) => `${s.times_seen}×` },
+        { label: "Last", cell: (s) => when(s.seen_at) },
+        { label: "", cell: (s) => (s.url ? h("a", { href: s.url, target: "_blank", rel: "noopener noreferrer" }, "Open ↗") : "") },
+      ], c.signals))),
+  c.title, [c.brand, c.category].filter(Boolean).join(" · "));
+}
+
 async function serversPage() {
   const data = await api("/api/servers");
   const decide = (g, status) => async () => {
@@ -800,6 +966,8 @@ async function route() {
     else if (parts[0] === "product" && parts[1]) await productPage(decodeURIComponent(parts[1]));
     else if (parts[0] === "radar") { await radarPage(params); every(30000, () => radarPage(params).catch(handleError)); }
     else if (parts[0] === "watchlist") await watchlistPage();
+    else if (parts[0] === "discovery" && parts[1]) await candidatePage(decodeURIComponent(parts[1]));
+    else if (parts[0] === "discovery") await discoveryPage(params);
     else if (parts[0] === "servers") await serversPage();
     else if (parts[0] === "audit") await auditPage();
     else { await overviewPage(); every(30000, () => overviewPage().catch(handleError)); }

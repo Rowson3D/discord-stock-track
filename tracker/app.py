@@ -21,6 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tracker.alerts import AlertRouter
 from tracker.db.migrate import upgrade_async
 from tracker.db.session import create_engine, create_sessionmaker
+from tracker.discovery.bestbuy import BestBuySource
+from tracker.discovery.service import DiscoveryService
 from tracker.guilds import bootstrap as bootstrap_guilds
 from tracker.http import HttpClient
 from tracker.instance import InstanceLock, SchemaGuard, code_schema_head, lock_path_for
@@ -82,6 +84,53 @@ def build_scheduler(
     # Safety net: retries events a failed sink left pending.
     scheduler.add("outbox:dispatch", DISPATCH_INTERVAL_SECONDS, dispatcher.dispatch, jitter=0)
     return scheduler
+
+
+def build_discovery(
+    settings: Settings,
+    sessions: async_sessionmaker[AsyncSession],
+    ebay: EbayClient | None,
+    http: HttpClient,
+) -> tuple[DiscoveryService | None, BestBuySource | None]:
+    if not settings.discovery.enabled:
+        return None, None
+    discovery = DiscoveryService(
+        sessions,
+        ebay,
+        settings.market,
+        settings.discovery,
+        fetch_listing=partial(fetch_listing, http),
+    )
+    bestbuy = BestBuySource(settings.bestbuy) if settings.bestbuy.configured else None
+    sources = ["check an item (panel)"] + (["Best Buy"] if bestbuy else [])
+    logger.info(
+        "Discovery on: %s; eBay budget %d/day%s",
+        ", ".join(sources),
+        settings.discovery.daily_ebay_calls,
+        "" if ebay else " (eBay not configured: markets won't be read)",
+    )
+    return discovery, bestbuy
+
+
+def add_discovery_jobs(
+    scheduler: Scheduler,
+    discovery: DiscoveryService,
+    bestbuy: BestBuySource | None,
+    settings: Settings,
+) -> None:
+    scheduler.add(
+        "discovery:check",
+        settings.discovery.check_interval_seconds,
+        discovery.check_due,
+        initial_delay=90.0,
+    )
+    if bestbuy is not None:
+        scheduler.add(
+            "discovery:bestbuy",
+            settings.bestbuy.interval_minutes * 60,
+            partial(discovery.collect, bestbuy),
+            initial_delay=60.0,
+        )
 
 
 def add_market_jobs(scheduler: Scheduler, market: MarketService, settings: Settings) -> None:
@@ -181,6 +230,9 @@ async def _run_locked(
             ebay = EbayClient(settings.ebay) if settings.ebay.configured else None
             market = MarketService(sessions, ebay, settings.market, dispatcher)
             add_market_jobs(scheduler, market, settings)
+            discovery, bestbuy = build_discovery(settings, sessions, ebay, http)
+            if discovery is not None:
+                add_discovery_jobs(scheduler, discovery, bestbuy, settings)
             guard = SchemaGuard(engine, await asyncio.to_thread(code_schema_head, url))
 
             async def schema_guard() -> None:
@@ -222,7 +274,7 @@ async def _run_locked(
             else:
                 logger.warning("DISCORD_BOT_TOKEN not set: running headless (events go to the log)")
 
-            panel = _build_panel(settings, sessions, scheduler, bot, unifi, retail)
+            panel = _build_panel(settings, sessions, scheduler, bot, unifi, retail, discovery)
 
             logger.info(
                 "Tracker running: regions=%s, catalog every %ss, hot poll every %ss",
@@ -235,6 +287,8 @@ async def _run_locked(
             finally:
                 if ebay is not None:
                     await ebay.aclose()
+                if bestbuy is not None:
+                    await bestbuy.aclose()
     finally:
         await engine.dispose()
         logger.info("Tracker stopped")
@@ -291,6 +345,7 @@ def _build_panel(
     bot: TrackerBot | None,
     unifi: UnifiService | None = None,
     retail: RetailService | None = None,
+    discovery: DiscoveryService | None = None,
 ) -> PanelServer | None:
     if not settings.panel.enabled:
         return None
@@ -318,6 +373,7 @@ def _build_panel(
         decide_guild=bot.apply_guild_decision if bot is not None else None,
         resolve=resolve,
         owner_ids=(lambda: bot.owner_ids) if bot is not None else None,
+        discovery=discovery,
     )
     try:
         app = create_app(deps)

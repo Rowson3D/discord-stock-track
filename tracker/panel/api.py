@@ -31,10 +31,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tracker import __version__
 from tracker.audit import audit, recent_audit
 from tracker.db.models import EbayStatsHistory, Event, Listing, Product, Valuation, Variant
+from tracker.discovery.service import DiscoveryService
 from tracker.guilds import GuildStatus, decide, list_guilds
 from tracker.history import ebay_trend, stock_history
 from tracker.outbox import load_events
 from tracker.panel.auth import LoginLimiter, SessionStore, TotpVerifier
+from tracker.panel.discovery import add_discovery_routes
 from tracker.panel.watchlist import Resolver, add_watchlist_routes
 from tracker.queries import opportunities, resolve_variant, search_variants, tracker_stats
 from tracker.scheduler import Scheduler
@@ -64,6 +66,7 @@ class PanelDeps:
     resolve: Resolver | None = None
     # Current owner IDs (the bot learns them from Discord when .env doesn't list any).
     owner_ids: Callable[[], Iterable[str]] | None = None
+    discovery: DiscoveryService | None = None
     clock: Callable[[], float] = field(default=time.time)
 
 
@@ -629,6 +632,17 @@ def create_app(deps: PanelDeps) -> FastAPI:
         owner_id=owner_id,
         resolve=deps.resolve,
         clock=lambda: datetime.fromtimestamp(deps.clock(), UTC),
+    )
+
+    add_discovery_routes(
+        app,
+        sessions=deps.sessions,
+        settings=deps.settings,
+        discovery=deps.discovery,
+        owner=owner,
+        record=record,
+        owner_id=owner_id,
+        resolve=deps.resolve,
     )
 
     # ── web app ──────────────────────────────────────────────────────────

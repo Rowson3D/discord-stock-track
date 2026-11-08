@@ -326,6 +326,23 @@ percentile $226.84) nets about −$5 after fees and shipping, so not a flip at M
 - Next: discovery (candidates from Best Buy, Slickdeals, and Reddit, checked against eBay,
   with a Discovery inbox).
 
+**2026-11-08: Discovery (foundation)** (see [DISCOVERY.md](DISCOVERY.md))
+- Candidates, signals, and daily eBay snapshots (aggregates only). Migration 0012.
+- Identity: model number (incl. "RTX 5090" pairs and LEGO set numbers) > UPC > title.
+- eBay check: the model must appear as its own token run (no XM4 for XM5, no 5090 Ti, no
+  sibling models); rejects parts, lots, boxes, accessories, and whole systems ("PC with
+  RTX 5090"); one price per seller; outliers dropped (against the median when there's no
+  store price). Verified live: RTX 5090 reads 37 real card sellers after excluding a
+  water block, a prebuilt PC, and a laptop.
+- Honest estimate: buyable at regular price means asking prices are capped; sales and
+  sold-out items are where profit can be real. Promising items get a 14-day daily trial
+  and are dropped unless the median net holds.
+- Sources: Check an item (panel) and the Best Buy API (key needed). **Slickdeals is not
+  used:** its robots.txt disallows the RSS feeds.
+- Panel Discovery inbox and candidate pages; Track adds store links to the watchlist.
+- Next: Discord alerts for promising items, Reddit (needs API approval), learning which
+  sources produce flips.
+
 ## 5. Risks and open questions
 
 | Risk | Mitigation |
