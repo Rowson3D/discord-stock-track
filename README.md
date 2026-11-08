@@ -135,6 +135,13 @@ mention role, admin role, ping rules, cooldown, and digest size (`/server config
 Alert messages include **Open** and **Watch** buttons. Both work for anyone in an approved
 server and survive restarts.
 
+### Owner Panel
+
+A private web panel (overview, opportunities, product charts, radar, servers, audit log) is
+served by `tracker run` on `http://127.0.0.1:8765`. Owner-only, with an authenticator-app login.
+Set it up once with `uv run tracker panel setup`, then restart. Reach it from your phone over
+Tailscale (`tailscale serve`), never an open port. See [docs/PANEL.md](docs/PANEL.md).
+
 ### Security Notes
 
 - Secrets live only in the server's `.env`. Log output masks them (and anything shaped like a
@@ -213,6 +220,8 @@ uv run tracker market collect u7-pro       # fetch eBay comps now
 uv run tracker market comp u7-pro 265 --shipping 10   # record a sold comp
 uv run tracker market scan --limit 25     # live read-only profit scan (top flips, pack breakouts)
 uv run tracker history udm-pro-max        # restock cycles, sell-out speed, daily eBay trend
+uv run tracker panel setup             # owner panel login (authenticator app); --rotate to replace
+uv run tracker panel status            # panel configuration (never shows the secret)
 uv run tracker import-legacy           # manual import of old watchlist/subscribers
 uv run tracker db upgrade              # apply migrations (also automatic on start)
 ```

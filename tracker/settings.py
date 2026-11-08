@@ -307,6 +307,43 @@ class MarketSettings(BaseSettings):
     deal_min_roi: float = Field(default=0.15, ge=0)
 
 
+class PanelSettings(BaseSettings):
+    """Owner control panel (web). Off until a TOTP secret exists (`tracker panel setup`).
+
+    It binds to localhost only. Reach it remotely with `tailscale serve`, never by opening
+    a port.
+    """
+
+    model_config = _config("PANEL_")
+
+    enabled: bool = True
+    host: str = "127.0.0.1"
+    port: int = Field(default=8765, ge=1, le=65535)
+    # Base32 TOTP secret for the owner login (authenticator app). Secret: .env only.
+    totp_secret: SecretStr | None = None
+    session_hours: float = Field(default=12, ge=0.25, le=168)
+    # Extra Host header values to accept, e.g. the Tailscale name `flipscout.tail1234.ts.net`.
+    allowed_hosts: CommaList = Field(default_factory=list)
+    # When set, requests proxied by `tailscale serve` must come from one of these logins.
+    tailscale_logins: CommaList = Field(default_factory=list)
+    secure_cookies: bool = True
+
+    _split = field_validator("allowed_hosts", "tailscale_logins", mode="before")(_split_commas)
+
+    @field_validator("host")
+    @classmethod
+    def _loopback_only(cls, value: str) -> str:
+        if value not in {"127.0.0.1", "localhost", "::1"}:
+            raise ValueError(
+                "The panel only binds to localhost; publish it with `tailscale serve`."
+            )
+        return value
+
+    @property
+    def configured(self) -> bool:
+        return self.enabled and bool(self.totp_secret and self.totp_secret.get_secret_value())
+
+
 class Settings:
     """Aggregate of all settings groups."""
 
@@ -322,6 +359,7 @@ class Settings:
         self.cleanup = CleanupSettings(_env_file=env_file)  # type: ignore[call-arg]
         self.ebay = EbaySettings(_env_file=env_file)  # type: ignore[call-arg]
         self.market = MarketSettings(_env_file=env_file)  # type: ignore[call-arg]
+        self.panel = PanelSettings(_env_file=env_file)  # type: ignore[call-arg]
 
     def secret_values(self) -> list[str]:
         """Every configured secret, so logging can mask it wherever it appears."""
@@ -329,6 +367,7 @@ class Settings:
             self.discord.bot_token,
             self.ebay.client_secret,
             self.sms.auth_token,
+            self.panel.totp_secret,
         )
         return [c.get_secret_value() for c in candidates if c and c.get_secret_value()]
 

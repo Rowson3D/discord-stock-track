@@ -38,6 +38,7 @@ from tracker.sources.web import fetch_listing
 
 if TYPE_CHECKING:
     from tracker.bot.client import TrackerBot
+    from tracker.panel.server import PanelServer
 
 logger = logging.getLogger(__name__)
 
@@ -221,6 +222,8 @@ async def _run_locked(
             else:
                 logger.warning("DISCORD_BOT_TOKEN not set: running headless (events go to the log)")
 
+            panel = _build_panel(settings, sessions, scheduler, bot)
+
             logger.info(
                 "Tracker running: regions=%s, catalog every %ss, hot poll every %ss",
                 ",".join(regions),
@@ -228,7 +231,7 @@ async def _run_locked(
                 settings.monitor.hot_tick_seconds,
             )
             try:
-                await _run_until_stopped(scheduler, bot, settings, stop)
+                await _run_until_stopped(scheduler, bot, settings, stop, panel)
             finally:
                 if ebay is not None:
                     await ebay.aclose()
@@ -281,9 +284,43 @@ def _build_bot(
     return bot
 
 
+def _build_panel(
+    settings: Settings,
+    sessions: async_sessionmaker[AsyncSession],
+    scheduler: Scheduler,
+    bot: TrackerBot | None,
+) -> PanelServer | None:
+    if not settings.panel.enabled:
+        return None
+    if not settings.panel.configured:
+        logger.info("Owner panel off: run `tracker panel setup` to enable it")
+        return None
+    from tracker.panel.api import PanelDeps, create_app
+    from tracker.panel.server import PanelServer
+
+    deps = PanelDeps(
+        settings=settings,
+        sessions=sessions,
+        started_at=datetime.now(UTC),
+        scheduler=scheduler,
+        decide_guild=bot.apply_guild_decision if bot is not None else None,
+    )
+    panel = PanelServer(create_app(deps), settings.panel)
+    if not panel.bind():
+        return None
+    logger.info("Owner panel: %s (owner login with your authenticator code)", panel.url)
+    return panel
+
+
 async def _run_until_stopped(
-    scheduler: Scheduler, bot: TrackerBot | None, settings: Settings, stop: asyncio.Event
+    scheduler: Scheduler,
+    bot: TrackerBot | None,
+    settings: Settings,
+    stop: asyncio.Event,
+    panel: PanelServer | None = None,
 ) -> None:
+    # The panel runs beside the core tasks but never decides when the tracker stops.
+    panel_task = asyncio.create_task(panel.serve(), name="panel") if panel else None
     tasks = {asyncio.create_task(scheduler.run(stop), name="scheduler")}
     if bot is not None:
         token = settings.discord.bot_token.get_secret_value()  # type: ignore[union-attr]
@@ -293,6 +330,10 @@ async def _run_until_stopped(
         await asyncio.wait(tasks | {stop_waiter}, return_when=asyncio.FIRST_COMPLETED)
     finally:
         stop.set()
+        if panel is not None and panel_task is not None:
+            panel.stop()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(panel_task, timeout=5)
         if bot is not None:
             await bot.close()
         for task in tasks:

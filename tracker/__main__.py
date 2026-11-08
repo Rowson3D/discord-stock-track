@@ -30,6 +30,7 @@ from tracker.market.ebay import EbayClient
 from tracker.market.service import MarketService
 from tracker.market.valuation import ValuationResult
 from tracker.outbox import EventDispatcher, LoggingSink, load_events
+from tracker.panel.setup import add_panel_commands
 from tracker.queries import opportunities, resolve_variant, variant_comps, variant_listings
 from tracker.settings import Settings, get_settings
 from tracker.sources.unifi import UnifiStore
@@ -476,6 +477,8 @@ def build_parser() -> argparse.ArgumentParser:
     opps.add_argument("--min-profit", type=float, default=0.0, help="dollars")
     opps.add_argument("--available", action="store_true", help="only items in stock now")
     opps.set_defaults(handler=cmd_opportunities)
+
+    add_panel_commands(commands)
     return parser
 
 

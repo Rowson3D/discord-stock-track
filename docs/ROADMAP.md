@@ -295,6 +295,22 @@ percentile $226.84) nets about −$5 after fees and shipping, so not a flip at M
 
 **Next: Phase 4 (web dashboard).**
 
+**2026-11-07: Phase 6a, owner panel (web)** (plan: FLIP_ENGINE.md §Control panel)
+- FastAPI JSON API plus a no-build static web app, served inside `tracker run` on
+  `127.0.0.1:8765` (uvicorn in the same event loop; a busy port disables only the panel).
+- Owner-only: TOTP login (`tracker panel setup` shows a QR code and saves the secret only
+  after a matching code), hashed server-side sessions, lockout, and audit of every login.
+- Guards: loopback-only binding, Host allowlist (DNS rebinding), optional Tailscale login
+  allowlist, custom header plus Origin check plus SameSite=Strict for writes, strict CSP with
+  no inline or third-party code, no secrets in responses.
+- Pages: overview, opportunities (credible flips / sold-out market / hyped in stock / all),
+  product (verdict, regions, daily eBay price and seller charts, events), radar, servers
+  (approve/block through the bot), audit log. Deal toasts.
+- Verified in a browser against a snapshot of the live database: wrong-code refusal, login,
+  secure cookie on `http://127.0.0.1`, every page, phone width, no CSP violations. 279 tests.
+- Next: the Tauri Windows wrapper (needs Rust), a container-safe binding for Docker, and
+  ledger, budget, and ops pages. See [PANEL.md](PANEL.md).
+
 ## 5. Risks and open questions
 
 | Risk | Mitigation |

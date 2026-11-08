@@ -214,14 +214,21 @@ class TrackerBot(commands.Bot):
     async def decide_guild(
         self, guild_id: int, status: GuildStatus, actor: discord.abc.User
     ) -> None:
+        await self.apply_guild_decision(str(guild_id), status, str(actor.id), str(actor))
+
+    async def apply_guild_decision(
+        self, guild_id_text: str, status: GuildStatus, actor_id: str | None, actor_name: str
+    ) -> None:
+        """Approve or block a server from any front end (Discord command or owner panel)."""
+        guild_id = int(guild_id_text)
         guild = self.get_guild(guild_id)
         async with self.ctx.sessions() as session, session.begin():
             await decide(
                 session,
                 guild_id,
                 status,
-                actor_id=str(actor.id),
-                actor_name=str(actor),
+                actor_id=actor_id,
+                actor_name=actor_name,
                 name=guild.name if guild else None,
             )
         pending = self._pending_leaves.pop(guild_id, None)
