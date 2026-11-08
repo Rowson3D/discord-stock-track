@@ -343,6 +343,15 @@ percentile $226.84) nets about −$5 after fees and shipping, so not a flip at M
 - Next: Discord alerts for promising items, Reddit (needs API approval), learning which
   sources produce flips.
 
+**2026-11-08: Watch tests**
+- Test any of your watches from `/watches` or the panel: a sample alert for the real
+  product goes through the same routing as real alerts and posts where the real one
+  would, marked as a test, pinging only you (no roles, no SMS, no Watch button).
+- Shows every alert type for that watch: pings you, posts without a ping, or not posted,
+  with the reason and channel.
+- Fix found by the test: a watch set to Sold out or Restock date pinged you in the radar
+  channel; anything a watch pings you for now goes to the alert channel, like rules.
+
 ## 5. Risks and open questions
 
 | Risk | Mitigation |

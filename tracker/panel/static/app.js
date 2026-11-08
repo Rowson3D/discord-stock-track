@@ -610,6 +610,42 @@ async function watchlistPage() {
     tr.after(editor);
   };
 
+  // Test: what this watch alerts you about, and a sample alert sent to Discord.
+  const testRow = async (w, tr) => {
+    const next = tr.nextElementSibling;
+    if (next && next.classList.contains("editor")) next.remove();
+    const cell = h("td", { colspan: 7 }, h("div", { class: "muted" }, "Checking…"));
+    const editor = h("tr", { class: "editor" }, cell);
+    tr.after(editor);
+    const show = async (kind, send) => {
+      let r;
+      try { r = await api(`/api/watches/${w.watch_id}/test`, { method: "POST", body: { kind, send } }); } catch (error) { editor.remove(); return handleError(error); }
+      const pick = h("select", { "aria-label": "Alert type to send" }, r.coverage.map((c) => h("option", { value: c.kind }, c.label)));
+      pick.value = r.selected.kind;
+      const sendButton = h("button", { class: "primary", disabled: !r.can_send, title: r.can_send ? "Posts where the real alert would go, pinging only you" : "Discord isn't connected" }, "Send test to Discord");
+      sendButton.addEventListener("click", () => { sendButton.disabled = true; show(pick.value, true); });
+      pick.addEventListener("change", () => show(pick.value, false));
+      let result = null;
+      if (r.sent) {
+        result = r.sent.ok
+          ? h("div", { class: "pill good" }, "Sent. ", r.sent.link ? h("a", { href: r.sent.link, target: "_blank", rel: "noopener noreferrer" }, "Open in Discord") : "Check Discord.")
+          : h("div", { class: "error" }, `Not sent: ${r.sent.error}`);
+      }
+      const rows = r.coverage.map((c) => h("tr", {},
+        h("td", {}, c.label),
+        h("td", {}, c.pings ? h("span", { class: "pill good" }, "Pings you") : c.posted ? h("span", { class: "pill neutral" }, "Posts, no ping") : h("span", { class: "pill bad" }, "Not posted")),
+        h("td", {}, c.channel || "—", c.sms ? h("span", { class: "pill info", title: "SMS isn't sent for tests" }, " + SMS") : null),
+        h("td", { class: "muted" }, c.reason)));
+      cell.replaceChildren(h("div", { class: "grid" },
+        h("div", {}, h("strong", {}, `What ${r.sku} ${r.region.toUpperCase()} alerts you about`), r.server ? h("span", { class: "muted" }, ` · in ${r.server}`) : null),
+        h("div", { class: "table-wrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["Alert", "Result", "Where", "Why"].map((label) => h("th", {}, label)))), h("tbody", {}, rows))),
+        h("div", { class: "row" }, pick, sendButton, h("button", { onclick: () => editor.remove() }, "Close")),
+        result,
+        h("div", { class: "muted" }, "Rules and \"ping me for every important alert\" can also ping you; this checks the watch on its own. Tests never ping roles or other people.")));
+    };
+    await show(null, false);
+  };
+
   const prioritySelect = (w) => {
     const select = h("select", { "aria-label": "Check priority" }, ["high", "normal", "low"].map((p) => h("option", { value: p }, p)));
     select.value = w.listing.priority;
@@ -634,6 +670,7 @@ async function watchlistPage() {
         h("td", {}, prioritySelect(w)),
         h("td", {}, h("div", { class: "row actions" },
           h("button", { onclick: (e) => editRow(w, e.target.closest("tr")) }, "Edit"),
+          h("button", { title: "See what this watch alerts you about, and send a sample alert", onclick: (e) => testRow(w, e.target.closest("tr")) }, "Test"),
           muted ? h("button", { onclick: () => mutate(`/api/watches/${w.watch_id}`, "PATCH", { mute_hours: 0 }, "Unmuted.") }, "Unmute")
             : h("button", { title: "No pings for 24 hours", onclick: () => mutate(`/api/watches/${w.watch_id}`, "PATCH", { mute_hours: 24 }, "Muted for 24 hours.") }, "Mute"),
           h("button", { class: "danger", onclick: () => confirm(`Stop watching ${w.listing.sku} ${w.listing.region.toUpperCase()}?`) && mutate(`/api/watches/${w.watch_id}`, "DELETE", undefined, "Removed.") }, "Remove"))));

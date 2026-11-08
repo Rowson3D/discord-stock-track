@@ -20,6 +20,7 @@ from tracker.domain import Priority
 from tracker.guilds import home_guild_id
 from tracker.queries import add_watches, set_subscribed
 from tracker.watching import ALERT_KEYS, RULE_DEFAULT_KINDS, Resolved, format_kinds, parse_kinds
+from tracker.watchtest import AlertPoster, SampleAlertError, Verdict, plan_watch_test
 
 Record = Callable[..., Awaitable[None]]
 Resolver = Callable[[str, str | None], Awaitable[Resolved]]
@@ -43,6 +44,11 @@ class BulkWatches(BaseModel):
     ids: list[int] = Field(min_length=1, max_length=500)
     action: Literal["remove", "mute", "unmute"]
     hours: float = Field(default=24, gt=0, le=MAX_MUTE_HOURS)
+
+
+class TestWatchBody(BaseModel):
+    kind: str | None = Field(default=None, max_length=32)
+    send: bool = False
 
 
 class PriorityBody(BaseModel):
@@ -160,6 +166,7 @@ def add_watchlist_routes(
     record: Record,
     owner_id: Callable[[], str | None],
     resolve: Resolver | None,
+    alerts: AlertPoster | None = None,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> None:
     def require_owner_id() -> str:
@@ -333,6 +340,61 @@ def add_watchlist_routes(
                     count += 1
         await record(f"watch.bulk_{body.action}", client, details={"ids": ids, "count": count})
         return {"action": body.action, "count": count}
+
+    def verdict_json(item: Verdict) -> dict[str, Any]:
+        channel = None
+        if item.channel_id is not None:
+            label = alerts.channel_label(item.channel_id) if alerts is not None else None
+            channel = label or f"channel {item.channel_id}"
+        return {
+            "kind": item.key,
+            "label": item.label,
+            "pings": item.pings,
+            "posted": item.posted,
+            "important": item.important,
+            "channel": channel,
+            "reason": item.reason,
+            "sms": item.sms,
+        }
+
+    @app.post("/api/watches/{watch_id}/test")
+    async def test_watch(
+        watch_id: int, body: TestWatchBody, client: str = Depends(owner)
+    ) -> dict[str, Any]:
+        """Explain what this watch alerts you about; with `send`, post a sample alert."""
+        try:
+            async with sessions() as session:
+                test = await plan_watch_test(
+                    session, settings, watch_id, user_id=owner_id(), key=body.kind, now=clock()
+                )
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        if test is None:
+            raise HTTPException(status_code=404, detail="no such watch of yours")
+        sent: dict[str, Any] | None = None
+        if body.send:
+            if alerts is None:
+                sent = {"ok": False, "error": "Discord isn't connected, so nothing can be posted."}
+            else:
+                try:
+                    sent = {"ok": True, "link": await alerts.post_test_alert(test)}
+                except SampleAlertError as error:
+                    sent = {"ok": False, "error": str(error)}
+            await record(
+                "watch.test", client, target=test.sku,
+                details={"alert": test.selected.key, "sent": sent["ok"]},
+            )  # fmt: skip
+        return {
+            "watch_id": watch_id,
+            "sku": test.sku,
+            "name": test.name,
+            "region": test.region,
+            "server": (test.guild.name or test.guild.guild_id) if test.guild else None,
+            "selected": verdict_json(test.selected),
+            "coverage": [verdict_json(item) for item in test.coverage],
+            "can_send": alerts is not None,
+            "sent": sent,
+        }
 
     @app.post("/api/listings/{listing_id}/priority")
     async def priority(

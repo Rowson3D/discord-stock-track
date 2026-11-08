@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 import discord
 
+from tracker.audit import audit
 from tracker.bot.embeds import source_name, status_text
 from tracker.domain import StockStatus, format_cents
 from tracker.guilds import config_for
@@ -22,6 +23,7 @@ from tracker.watching import (
     remove_watch_ids,
     user_watch_rows,
 )
+from tracker.watchtest import SampleAlertError, WatchTest, plan_watch_test
 
 if TYPE_CHECKING:
     from tracker.bot.client import TrackerBot
@@ -127,7 +129,44 @@ def watches_embed(rows: list[WatchRow], now: datetime) -> discord.Embed:
     embed = discord.Embed(
         title=f"🔔 Your watches ({len(rows)})", description=text[:4000], color=0x5865F2
     )
-    embed.set_footer(text="Pick watches below, then Remove, Mute 24h, or Unmute.")
+    embed.set_footer(text="Pick watches below, then Remove, Mute 24h, Unmute, or Test.")
+    return embed
+
+
+def coverage_line(test: WatchTest, index: int) -> str:
+    item = test.coverage[index]
+    where = f"<#{item.channel_id}>" if item.channel_id else ""
+    if item.pings:
+        line = f"✅ **{item.label}**: pings you in {where}"
+    elif item.posted:
+        line = f"➖ **{item.label}**: posts in {where}, no ping"
+    else:
+        line = f"🚫 **{item.label}**: not posted"
+    if item.sms:
+        line += " · 📱 SMS"
+    return line
+
+
+def watch_test_embed(test: WatchTest, link: str | None, error: str | None) -> discord.Embed:
+    selected = test.selected
+    if link:
+        head = f"🧪 Sent a sample **{selected.label}** alert: {link}"
+    elif error:
+        head = f"🧪 Couldn't send the sample **{selected.label}** alert: {error}"
+    else:
+        head = f"🧪 Sample **{selected.label}** alert"
+    lines = [head, "", f"**Why:** {selected.reason}", "", "**What this watch alerts you about**"]
+    lines += [coverage_line(test, i) for i in range(len(test.coverage))]
+    if any(item.sms for item in test.coverage):
+        lines += ["", "📱 SMS goes out for these types too (not sent for tests)."]
+    embed = discord.Embed(
+        title=f"Test: {test.sku} · {test.region.upper()}",
+        description="\n".join(lines)[:4000],
+        color=0x57F287 if selected.pings else 0xFEE75C,
+    )
+    embed.set_footer(
+        text="Rules and 'ping me for everything' can also ping you; this checks the watch alone."
+    )
     return embed
 
 
@@ -159,6 +198,7 @@ class WatchManager(discord.ui.View):
             ("Remove", discord.ButtonStyle.danger, "remove"),
             (f"Mute {MUTE_HOURS}h", discord.ButtonStyle.secondary, "mute"),
             ("Unmute", discord.ButtonStyle.secondary, "unmute"),
+            ("Test", discord.ButtonStyle.primary, "test"),
         ):
             button: discord.ui.Button[Any] = discord.ui.Button(label=label, style=style)
             button.callback = self._handler(action)  # type: ignore[method-assign]
@@ -188,6 +228,9 @@ class WatchManager(discord.ui.View):
                 "Pick one or more watches first.", ephemeral=True
             )
             return
+        if action == "test":
+            await self.test(interaction)
+            return
         now = datetime.now(UTC)
         async with self.bot.ctx.sessions() as session, session.begin():
             if action == "remove":
@@ -208,4 +251,41 @@ class WatchManager(discord.ui.View):
             content=f"✅ {done[action]} {count} watch(es).",
             embed=watches_embed(rows, now),
             view=WatchManager(self.bot, self.user_id, rows),
+        )
+
+    async def test(self, interaction: discord.Interaction[Any]) -> None:
+        """Send a sample alert for the first selected watch and explain what it covers."""
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        async with self.bot.ctx.sessions() as session:
+            test = await plan_watch_test(
+                session, self.bot.ctx.settings, self.selected[0], user_id=self.user_id
+            )
+        if test is None:
+            await interaction.followup.send(
+                "That watch is gone. Run /watches again.", ephemeral=True
+            )
+            return
+        link: str | None = None
+        error: str | None = None
+        try:
+            link = await self.bot.post_test_alert(test)
+        except SampleAlertError as exc:
+            error = str(exc)
+        async with self.bot.ctx.sessions() as session, session.begin():
+            await audit(
+                session,
+                "watch.test",
+                actor_id=self.user_id,
+                actor_name=str(interaction.user),
+                guild_id=interaction.guild_id,
+                target=test.sku,
+                details={"alert": test.selected.key, "sent": bool(link), "error": error},
+            )
+        note = (
+            f"Tested the first of {len(self.selected)} selected watches."
+            if len(self.selected) > 1
+            else None
+        )
+        await interaction.followup.send(
+            content=note, embed=watch_test_embed(test, link, error), ephemeral=True
         )

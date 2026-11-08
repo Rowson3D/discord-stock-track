@@ -41,6 +41,7 @@ from tracker.panel.watchlist import Resolver, add_watchlist_routes
 from tracker.queries import opportunities, resolve_variant, search_variants, tracker_stats
 from tracker.scheduler import Scheduler
 from tracker.settings import Settings
+from tracker.watchtest import AlertPoster
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 MUTATION_HEADER = "x-flipscout"
@@ -67,6 +68,8 @@ class PanelDeps:
     # Current owner IDs (the bot learns them from Discord when .env doesn't list any).
     owner_ids: Callable[[], Iterable[str]] | None = None
     discovery: DiscoveryService | None = None
+    # Posts watch test alerts to Discord; tests only explain when absent.
+    alerts: AlertPoster | None = None
     clock: Callable[[], float] = field(default=time.time)
 
 
@@ -631,6 +634,7 @@ def create_app(deps: PanelDeps) -> FastAPI:
         record=record,
         owner_id=owner_id,
         resolve=deps.resolve,
+        alerts=deps.alerts,
         clock=lambda: datetime.fromtimestamp(deps.clock(), UTC),
     )
 

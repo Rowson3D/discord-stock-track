@@ -22,6 +22,7 @@ from tracker.guilds import (
     get_guild,
     seed_home,
 )
+from tracker.watchtest import WatchTest
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +211,17 @@ class TrackerBot(commands.Bot):
             await guild.leave()
         except discord.HTTPException as exc:
             logger.error("Failed to leave server %s: %s", guild.id, exc)
+
+    async def post_test_alert(self, test: WatchTest) -> str:
+        """Post a watch test where the real alert would go (raises SampleAlertError)."""
+        from tracker.bot.sink import send_test_alert
+
+        return await send_test_alert(self, test)
+
+    def channel_label(self, channel_id: int) -> str | None:
+        channel = self.get_channel(channel_id)
+        name = getattr(channel, "name", None)
+        return f"#{name}" if name else None
 
     async def decide_guild(
         self, guild_id: int, status: GuildStatus, actor: discord.abc.User

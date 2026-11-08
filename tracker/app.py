@@ -374,6 +374,7 @@ def _build_panel(
         resolve=resolve,
         owner_ids=(lambda: bot.owner_ids) if bot is not None else None,
         discovery=discovery,
+        alerts=bot,
     )
     try:
         app = create_app(deps)

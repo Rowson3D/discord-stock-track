@@ -134,9 +134,9 @@ class AlertRouter:
         mention_kinds = frozenset(EventKind(k) for k in guild.mention_kinds if k in EventKind)
         watchers = {w.discord_user_id for w in watches if watch_pings(w, event, mention_kinds, now)}
         ruled = {r.discord_user_id for r in rules if rule_matches(r, event, now)}
-        drop = is_price_drop(event)
-        # Anything someone explicitly asked to be pinged about belongs in the alert channel.
-        important = event.kind in IMPORTANT_KINDS or (drop and bool(watchers)) or bool(ruled)
+        # Anything someone explicitly asked to be pinged about belongs in the alert channel
+        # (a watched price drop, a watch set to Sold out or Restock date, a rule match).
+        important = event.kind in IMPORTANT_KINDS or bool(watchers) or bool(ruled)
         channel = guild.alert_channel_id if important else guild.effective_radar_channel
         plan = AlertPlan(event=event, important=important, channel_id=channel)
         mentioned = watchers | ruled

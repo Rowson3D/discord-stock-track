@@ -16,6 +16,7 @@ from tracker.bot.views import alert_view
 from tracker.guilds import GuildConfig, approved_configs, home_guild_id
 from tracker.outbox import RadarEvent
 from tracker.settings import DiscordSettings
+from tracker.watchtest import SampleAlertError, WatchTest
 
 logger = logging.getLogger(__name__)
 
@@ -147,3 +148,52 @@ class DiscordSink:
         except (discord.Forbidden, discord.NotFound) as exc:
             # Permanent problems (missing permission, deleted channel): retrying won't help.
             logger.error("Cannot post to channel %s: %s", getattr(channel, "id", "?"), exc)
+
+
+def sample_alert_message(test: WatchTest) -> dict[str, Any]:
+    """The real alert's message, marked as a test, mentioning only the person testing."""
+    plan = AlertPlan(
+        event=test.event,
+        important=test.selected.important,
+        channel_id=test.selected.channel_id,
+        mention_user_ids=test.mention_user_ids,
+    )
+    embed = alert_embed(test.event)
+    embed.title = f"🧪 TEST · {embed.title or ''}"[:256]
+    view = alert_view(None, test.event.url)  # No Watch button: it would unwatch the item.
+    message: dict[str, Any] = {
+        "content": f"🧪 **Test alert** · {alert_content(plan)}"[:2000],
+        "embed": embed,
+        "allowed_mentions": discord.AllowedMentions(
+            users=True, roles=False, everyone=False, replied_user=False
+        ),
+    }
+    if view is not None:
+        message["view"] = view
+    return message
+
+
+async def send_test_alert(client: ChannelSource, test: WatchTest) -> str:
+    """Post a watch test where the real alert would go. Returns a link to the message."""
+    channel_id = test.selected.channel_id
+    if not test.selected.posted or channel_id is None:
+        raise SampleAlertError(test.selected.reason)
+    channel = client.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await client.fetch_channel(channel_id)
+        except (discord.NotFound, discord.Forbidden) as exc:
+            raise SampleAlertError(f"The bot can't open the alert channel ({exc.text}).") from exc
+    guild_of_channel = getattr(getattr(channel, "guild", None), "id", None)
+    if (
+        test.guild is not None
+        and guild_of_channel is not None
+        and test.guild.guild_id != "global"
+        and str(guild_of_channel) != test.guild.guild_id
+    ):
+        raise SampleAlertError("The alert channel isn't in the watch's server.")
+    try:
+        sent = await channel.send(**sample_alert_message(test))
+    except (discord.Forbidden, discord.NotFound) as exc:
+        raise SampleAlertError(f"The bot can't post in the alert channel ({exc.text}).") from exc
+    return str(getattr(sent, "jump_url", "") or "")
