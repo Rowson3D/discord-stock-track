@@ -305,7 +305,12 @@ def _build_panel(
         scheduler=scheduler,
         decide_guild=bot.apply_guild_decision if bot is not None else None,
     )
-    panel = PanelServer(create_app(deps), settings.panel)
+    try:
+        app = create_app(deps)
+    except ValueError as error:  # A bad panel key must never take the bot down.
+        logger.error("Owner panel disabled: %s. Fix it with `tracker panel setup --rotate`.", error)
+        return None
+    panel = PanelServer(app, settings.panel)
     if not panel.bind():
         return None
     logger.info("Owner panel: %s (owner login with your authenticator code)", panel.url)

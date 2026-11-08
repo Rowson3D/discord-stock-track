@@ -34,9 +34,25 @@ def new_totp_secret() -> str:
     return base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
 
 
+MIN_SECRET_BYTES = 10  # 80 bits: RFC 4226's minimum (setup generates 160).
+
+
 def _key(secret: str) -> bytes:
     cleaned = secret.replace(" ", "").upper()
     return base64.b32decode(cleaned + "=" * (-len(cleaned) % 8))
+
+
+def secret_problem(secret: str | None) -> str | None:
+    """Why `secret` can't be an authenticator key, or None if it can."""
+    if not secret:
+        return "not set"
+    try:
+        key = _key(secret)
+    except ValueError:
+        return "not a valid authenticator key (base32: letters A-Z and digits 2-7)"
+    if len(key) < MIN_SECRET_BYTES:
+        return f"too short ({len(key) * 8} bits; at least {MIN_SECRET_BYTES * 8} needed)"
+    return None
 
 
 def totp_at(secret: str, step: int) -> str:
@@ -56,7 +72,9 @@ def provisioning_uri(secret: str, account: str = "owner", issuer: str = "FlipSco
 
 class TotpVerifier:
     def __init__(self, secret: str, clock: Callable[[], float] = time.time) -> None:
-        _key(secret)  # Fail fast on a malformed secret.
+        problem = secret_problem(secret)
+        if problem:  # Fail fast; never run with a weak or broken key.
+            raise ValueError(f"PANEL_TOTP_SECRET is {problem}")
         self._secret = secret
         self._clock = clock
         self._last_step = -1

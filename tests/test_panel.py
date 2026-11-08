@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tests.conftest import make_snapshot
+from tracker.app import _build_panel
 from tracker.db.models import AuditLog, EbayStats, Guild, Variant
 from tracker.domain import StockStatus
 from tracker.guilds import GuildStatus
@@ -26,10 +27,12 @@ from tracker.panel.auth import (
     TotpVerifier,
     new_totp_secret,
     provisioning_uri,
+    secret_problem,
     totp_at,
 )
 from tracker.panel.server import PanelServer
 from tracker.panel.setup import cmd_panel_setup, set_env_value
+from tracker.scheduler import Scheduler
 from tracker.settings import MarketSettings, PanelSettings, Settings
 
 SECRET = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"  # public demo key  # gitleaks:allow
@@ -379,3 +382,44 @@ async def test_setup_cli_writes_secret_and_refuses_overwrite(tmp_path: Path, cap
     assert await cmd_panel_setup(settings, args) == 0
     assert "already set up" in capsys.readouterr().out
     assert env.read_text(encoding="utf-8").splitlines() == lines  # untouched
+
+
+# ── invalid secrets ──────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("secret", "problem"),
+    [
+        ("", "not set"),
+        ("my-password-1", "not a valid authenticator key"),  # "-" and "1" aren't base32
+        ("JBSWY3DP", "too short"),  # 40 bits
+        (SECRET, None),
+    ],
+)
+def test_secret_problem(secret, problem):
+    found = secret_problem(secret)
+    assert (found is None) if problem is None else found.startswith(problem)
+
+
+def test_weak_secret_is_refused():
+    with pytest.raises(ValueError, match="too short"):
+        TotpVerifier("JBSWY3DP")
+
+
+def test_bad_secret_disables_panel_but_not_tracker(sessions, caplog):
+    settings = panel_settings(totp_secret="not-a-key!!!")
+    assert _build_panel(settings, sessions, Scheduler(), None) is None
+    assert "Owner panel disabled" in caplog.text
+    assert "not-a-key" not in caplog.text  # the bad value itself is never logged
+
+
+async def test_setup_replaces_invalid_secret_without_rotate(tmp_path: Path, capsys):
+    env = tmp_path / ".env"
+    env.write_text("PANEL_TOTP_SECRET=hunter2hunter\n", encoding="utf-8")
+    settings = Settings(env_file=None)
+    settings.panel = PanelSettings(_env_file=None, totp_secret="hunter2hunter")  # type: ignore[call-arg]
+    args = argparse.Namespace(env_file=env, rotate=False, yes=True)
+    assert await cmd_panel_setup(settings, args) == 0
+    assert "will be replaced" in capsys.readouterr().out
+    [entry] = env.read_text(encoding="utf-8").splitlines()
+    assert secret_problem(entry.split("=", 1)[1]) is None

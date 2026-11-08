@@ -13,7 +13,7 @@ import socket
 import sys
 from pathlib import Path
 
-from tracker.panel.auth import TotpVerifier, new_totp_secret, provisioning_uri
+from tracker.panel.auth import TotpVerifier, new_totp_secret, provisioning_uri, secret_problem
 from tracker.settings import ENV_FILE, Settings
 
 ENV_KEY = "PANEL_TOTP_SECRET"
@@ -65,12 +65,16 @@ def _confirm(secret: str) -> bool:
 
 async def cmd_panel_setup(settings: Settings, args: argparse.Namespace) -> int:
     env_path: Path = args.env_file or ENV_FILE
-    if settings.panel.totp_secret and not args.rotate:
+    current = settings.panel.totp_secret.get_secret_value() if settings.panel.totp_secret else ""
+    problem = secret_problem(current) if current else None
+    if current and not problem and not args.rotate:
         print(
             "The owner panel is already set up. To replace the authenticator secret "
             "(e.g. a lost phone), run: tracker panel setup --rotate"
         )
         return 0
+    if problem:
+        print(f"The current PANEL_TOTP_SECRET is {problem}; it will be replaced.")
     if not sys.stdin.isatty() and not args.yes:
         print("Run this in an interactive terminal so you can scan the code and confirm it.")
         return 2
@@ -99,7 +103,12 @@ async def cmd_panel_status(settings: Settings, _args: argparse.Namespace) -> int
     panel = settings.panel
     url = f"http://{panel.host}:{panel.port}"
     print(f"Owner panel: {'enabled' if panel.enabled else 'disabled (PANEL_ENABLED=false)'}")
-    print(f"  Login secret: {'set' if panel.totp_secret else 'missing: run `tracker panel setup`'}")
+    problem = secret_problem(panel.totp_secret.get_secret_value() if panel.totp_secret else None)
+    login = {
+        None: "set",
+        "not set": "missing: run `tracker panel setup`",
+    }.get(problem, f"INVALID ({problem}): run `tracker panel setup`")
+    print(f"  Login secret: {login}")
     print(f"  Address: {url} (localhost only)")
     print(f"  Extra hosts: {', '.join(panel.allowed_hosts) or 'none'}")
     print(f"  Tailscale logins allowed: {len(panel.tailscale_logins) or 'any on your tailnet'}")
