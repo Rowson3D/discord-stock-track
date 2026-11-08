@@ -23,6 +23,7 @@ from tracker.domain import ListingSnapshot, format_cents
 from tracker.history import humanize, stock_history
 from tracker.http import HttpClient
 from tracker.ingest import Ingestor
+from tracker.instance import AlreadyRunningError
 from tracker.legacy import import_legacy
 from tracker.logconfig import configure_logging
 from tracker.market.ebay import EbayClient
@@ -147,7 +148,11 @@ async def cmd_import_legacy(settings: Settings, args: argparse.Namespace) -> int
 
 
 async def cmd_run(settings: Settings, args: argparse.Namespace) -> int:
-    await run_tracker(settings, regions=[args.region] if args.region else None)
+    try:
+        await run_tracker(settings, regions=[args.region] if args.region else None)
+    except AlreadyRunningError as error:
+        print(error, file=sys.stderr)
+        return 2
     return 0
 
 

@@ -23,6 +23,7 @@ from tracker.db.migrate import upgrade_async
 from tracker.db.session import create_engine, create_sessionmaker
 from tracker.guilds import bootstrap as bootstrap_guilds
 from tracker.http import HttpClient
+from tracker.instance import InstanceLock, SchemaGuard, code_schema_head, lock_path_for
 from tracker.legacy import import_legacy
 from tracker.market.ebay import EbayClient
 from tracker.market.service import MarketService
@@ -141,10 +142,24 @@ async def run_tracker(
     regions: Sequence[str] | None = None,
     stop: asyncio.Event | None = None,
 ) -> None:
+    url = settings.app.resolved_database_url
+    # One tracker per database, taken before migrating so a second copy changes nothing.
+    with InstanceLock(lock_path_for(url, settings.app.data_dir)) as lock:
+        logger.info("Instance lock held: %s", lock.path)
+        await _run_locked(settings, url, sinks=sinks, regions=regions, stop=stop)
+
+
+async def _run_locked(
+    settings: Settings,
+    url: str,
+    *,
+    sinks: Sequence[EventSink] | None,
+    regions: Sequence[str] | None,
+    stop: asyncio.Event | None,
+) -> None:
     stop = stop or asyncio.Event()
     _install_signal_handlers(stop)
     regions = list(regions or settings.unifi.regions)
-    url = settings.app.resolved_database_url
 
     await upgrade_async(url)
     engine = create_engine(url)
@@ -165,6 +180,13 @@ async def run_tracker(
             ebay = EbayClient(settings.ebay) if settings.ebay.configured else None
             market = MarketService(sessions, ebay, settings.market, dispatcher)
             add_market_jobs(scheduler, market, settings)
+            guard = SchemaGuard(engine, await asyncio.to_thread(code_schema_head, url))
+
+            async def schema_guard() -> None:
+                if not await guard.check():
+                    stop.set()
+
+            scheduler.add("db:schema-guard", 60.0, schema_guard, initial_delay=60.0)
             await auto_import_legacy(settings, sessions, store)
 
             router = AlertRouter()
