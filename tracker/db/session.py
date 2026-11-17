@@ -14,6 +14,11 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+# SQLite allows one writer at a time. A catalog crawl writes ~850 listings in one
+# transaction (10+ seconds on a small server), so other writers (hot polls, eBay collection,
+# Discord commands) wait for it rather than fail with "database is locked".
+BUSY_TIMEOUT_MS = 30_000
+
 
 def ensure_sqlite_dir(url: str) -> None:
     parsed = make_url(url)
@@ -32,7 +37,7 @@ def create_engine(url: str, **kwargs: Any) -> AsyncEngine:
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.execute("PRAGMA journal_mode=WAL")
-            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
             cursor.close()
 
     return engine

@@ -5,6 +5,7 @@ import json
 from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from sqlalchemy import func, select
@@ -167,6 +168,35 @@ async def test_resolve_errors(catalog, text: str, message: str):
     rows, error = await commands._resolve(text, None)
     assert rows == []
     assert message in error
+
+
+class _Deferring:
+    def __init__(self) -> None:
+        self.deferred: dict[str, Any] | None = None
+
+    async def defer(self, **kwargs: Any) -> None:
+        self.deferred = kwargs
+
+    async def send_message(self, *args: Any, **kwargs: Any) -> None:
+        raise AssertionError("radar must reply through the followup after deferring")
+
+
+class _Followup:
+    def __init__(self) -> None:
+        self.sent: list[dict[str, Any]] = []
+
+    async def send(self, content: str | None = None, **kwargs: Any) -> None:
+        self.sent.append({"content": content, **kwargs})
+
+
+async def test_radar_acknowledges_before_reading(catalog):
+    commands, _ = _commands(catalog)
+    interaction = SimpleNamespace(response=_Deferring(), followup=_Followup())
+    await commands.radar.callback(commands, interaction)  # type: ignore[arg-type]
+    assert interaction.response.deferred == {"ephemeral": True, "thinking": True}
+    [reply] = interaction.followup.sent
+    assert reply["ephemeral"] is True
+    assert reply["content"] == "No radar events yet." or reply["embed"].title == "📡 Radar"
 
 
 # ── app wiring ────────────────────────────────────────────────────────────

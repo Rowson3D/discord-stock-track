@@ -588,12 +588,14 @@ class TrackerCommands(commands.Cog):
         kind: str | None = None,
         limit: app_commands.Range[int, 1, 25] = 15,
     ) -> None:
+        # Acknowledge first: Discord drops replies after 3 s, and a busy tracker can be slower.
+        await interaction.response.defer(ephemeral=True, thinking=True)
         async with self.ctx.sessions() as session:
             events = await load_events(
                 session, pending_only=False, limit=limit, kinds=[kind] if kind else None
             )
         if not events:
-            await interaction.response.send_message("No radar events yet.", ephemeral=True)
+            await interaction.followup.send("No radar events yet.", ephemeral=True)
             return
         lines = []
         for event in events:
@@ -607,7 +609,7 @@ class TrackerCommands(commands.Cog):
             )
             lines.append(f"{_ts(event.occurred_at)} {emoji} {label} · {name}{region}{change}")
         embed = discord.Embed(title="📡 Radar", description=_paginate(lines), color=0x5865F2)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(description="Sold-out items with an announced restock date")
     @app_commands.describe(days="Look this many days ahead")
