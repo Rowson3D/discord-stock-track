@@ -273,6 +273,24 @@ async def _run_locked(
                 )
             else:
                 logger.warning("DISCORD_BOT_TOKEN not set: running headless (events go to the log)")
+            if settings.ntfy.configured:
+                from tracker.ntfy import NtfySink
+
+                # The bot learns the owner from Discord when DISCORD_OWNER_IDS isn't set.
+                owners = (
+                    (lambda: bot.owner_ids)
+                    if bot is not None
+                    else (lambda: settings.discord.owner_ids)
+                )
+                sink_list.append(
+                    NtfySink(
+                        settings.ntfy,
+                        sessions,
+                        owners,
+                        cooldown_minutes=settings.discord.alert_cooldown_minutes,
+                    )
+                )
+                logger.info("ntfy phone push enabled (%s)", settings.ntfy.server)
 
             panel = _build_panel(settings, sessions, scheduler, bot, unifi, retail, discovery)
 

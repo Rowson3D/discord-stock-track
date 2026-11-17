@@ -29,6 +29,7 @@ from tracker.logconfig import configure_logging
 from tracker.market.ebay import EbayClient
 from tracker.market.service import MarketService
 from tracker.market.valuation import ValuationResult
+from tracker.ntfy import add_ntfy_commands
 from tracker.outbox import EventDispatcher, LoggingSink, load_events
 from tracker.panel.setup import add_panel_commands
 from tracker.queries import opportunities, resolve_variant, variant_comps, variant_listings
@@ -479,6 +480,7 @@ def build_parser() -> argparse.ArgumentParser:
     opps.set_defaults(handler=cmd_opportunities)
 
     add_panel_commands(commands)
+    add_ntfy_commands(commands)
     return parser
 
 

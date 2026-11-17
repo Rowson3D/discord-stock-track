@@ -36,6 +36,9 @@ something worth buying appears.
   recorded on days the store was sold out). eBay *asking* prices for something the store has in
   stock are capped at the store price plus tax and convenience, so resellers' wishful listings
   never trigger a deal. Back-in-stock alerts show the credible profit and its evidence.
+- **Instant phone alarms (ntfy, free):** your own watches and rules ring your phone the
+  second they fire (restocks and Early Access at urgent priority; tap to open the store).
+  `tracker ntfy setup`, then subscribe in the free ntfy app.
 - **Optional SMS (Twilio)** and automatic cleanup of the bot's old messages.
 
 ## Quick Start (Docker)
@@ -207,6 +210,7 @@ Highlights:
 | `TRACKER_MONITOR_HOT_POLL_INTERVAL_SECONDS` | `60` | Re-check interval for hot listings |
 | `DISCORD_MENTION_KINDS` | `back_in_stock,early_access,new_listing,relisted` | Which events ping |
 | `DISCORD_ALERT_COOLDOWN_MINUTES` | `10` | Suppress repeats of the same alert |
+| `NTFY_TOPIC` (+ `NTFY_SERVER`, `NTFY_TOKEN`) | off | Instant phone push for your own watches and rules (`tracker ntfy setup`) |
 | `SMS_ENABLED` + `TWILIO_*` + `SMS_TO_NUMBERS` | off | SMS for back in stock and Early Access |
 | `MESSAGE_CLEANUP_ENABLED` | `false` | Delete the bot's own messages after `MESSAGE_CLEANUP_TTL_MINUTES` |
 | `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` | unset | eBay production keyset for automatic comps |
@@ -265,6 +269,7 @@ tracker/
 ├── market/           eBay client, title matching, valuation math, comp collection, deals
 ├── alerts.py         routing, pings, cooldown
 ├── bot/              Discord client, slash commands, embeds, buttons, sink, cleanup
+├── ntfy.py           ntfy phone push sink + `tracker ntfy` commands
 ├── sms.py            Twilio sink
 ├── scheduler.py      single-flight jobs with jitter and backoff
 ├── app.py            wires it all together (`tracker run`)

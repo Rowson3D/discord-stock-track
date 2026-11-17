@@ -6,6 +6,7 @@ Each settings group owns an env prefix. Legacy variable names from the original 
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
@@ -152,6 +153,46 @@ class SmsSettings(BaseSettings):
             and self.from_number
             and self.to_numbers
         )
+
+
+class NtfySettings(BaseSettings):
+    """Instant phone push through ntfy (free app; the ntfy.sh service or your own server).
+
+    The topic name is the password on ntfy.sh: keep it long and random (`tracker ntfy setup`).
+    """
+
+    model_config = _config("NTFY_")
+
+    enabled: bool = True
+    server: str = "https://ntfy.sh"
+    topic: SecretStr | None = None
+    token: SecretStr | None = None  # access token for a server with logins
+    # Alert types for watches that keep the server defaults (price drops always count).
+    kinds: CommaList = Field(
+        default_factory=lambda: ["back_in_stock", "early_access", "relisted", "deal"]
+    )
+    timeout_seconds: float = 10
+
+    _split = field_validator("kinds", mode="before")(_split_commas)
+
+    @field_validator("server")
+    @classmethod
+    def _server(cls, value: str) -> str:
+        value = value.strip().rstrip("/")
+        if not value.startswith(("https://", "http://")):
+            raise ValueError("NTFY_SERVER must be an http(s) URL")
+        return value
+
+    @field_validator("topic")
+    @classmethod
+    def _topic(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value.get_secret_value()):
+            raise ValueError("NTFY_TOPIC must be 1-64 letters, digits, - or _")
+        return value
+
+    @property
+    def configured(self) -> bool:
+        return self.enabled and bool(self.topic and self.topic.get_secret_value())
 
 
 class CleanupSettings(BaseSettings):
@@ -393,6 +434,7 @@ class Settings:
         self.monitor = MonitorSettings(_env_file=env_file)  # type: ignore[call-arg]
         self.retail = RetailSettings(_env_file=env_file)  # type: ignore[call-arg]
         self.sms = SmsSettings(_env_file=env_file)  # type: ignore[call-arg]
+        self.ntfy = NtfySettings(_env_file=env_file)  # type: ignore[call-arg]
         self.cleanup = CleanupSettings(_env_file=env_file)  # type: ignore[call-arg]
         self.ebay = EbaySettings(_env_file=env_file)  # type: ignore[call-arg]
         self.market = MarketSettings(_env_file=env_file)  # type: ignore[call-arg]
@@ -406,6 +448,8 @@ class Settings:
             self.discord.bot_token,
             self.ebay.client_secret,
             self.sms.auth_token,
+            self.ntfy.topic,
+            self.ntfy.token,
             self.panel.totp_secret,
             self.bestbuy.api_key,
         )
