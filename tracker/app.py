@@ -10,7 +10,7 @@ import asyncio
 import contextlib
 import logging
 import signal
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
@@ -23,6 +23,7 @@ from tracker.db.migrate import upgrade_async
 from tracker.db.session import create_engine, create_sessionmaker
 from tracker.discovery.bestbuy import BestBuySource
 from tracker.discovery.service import DiscoveryService
+from tracker.domain import ListingSnapshot, SourceKey
 from tracker.guilds import bootstrap as bootstrap_guilds
 from tracker.http import HttpClient
 from tracker.instance import InstanceLock, SchemaGuard, code_schema_head, lock_path_for
@@ -35,6 +36,7 @@ from tracker.services.retail import RetailService
 from tracker.services.unifi import UnifiService
 from tracker.settings import Settings
 from tracker.sms import SmsSink
+from tracker.sources.bestbuy_api import BestBuyStock
 from tracker.sources.unifi import UnifiStore
 from tracker.sources.web import fetch_listing
 
@@ -84,6 +86,28 @@ def build_scheduler(
     # Safety net: retries events a failed sink left pending.
     scheduler.add("outbox:dispatch", DISPATCH_INTERVAL_SECONDS, dispatcher.dispatch, jitter=0)
     return scheduler
+
+
+def build_retail_fetch(
+    settings: Settings, http: HttpClient
+) -> tuple[Callable[[str, SourceKey], Awaitable[ListingSnapshot]], BestBuyStock | None]:
+    """Page fetches for store links, except Best Buy through its API when a key is set."""
+    pages = partial(fetch_listing, http)
+    if not settings.bestbuy.configured:
+        return pages, None
+    stock = BestBuyStock(settings.bestbuy)
+    settings.retail.bestbuy_interval_seconds = settings.bestbuy.stock_interval_seconds
+    logger.info(
+        "Best Buy stock checks use the official API (every %ss)",
+        settings.bestbuy.stock_interval_seconds,
+    )
+
+    async def fetch(url: str, source: SourceKey) -> ListingSnapshot:
+        if source is SourceKey.BESTBUY:
+            return await stock.snapshot(url)
+        return await pages(url, source)
+
+    return fetch, stock
 
 
 def build_discovery(
@@ -223,9 +247,8 @@ async def _run_locked(
         async with HttpClient(settings.http) as http:
             store = UnifiStore(http, settings.unifi)
             unifi = UnifiService(sessions, store, settings.monitor, dispatcher)
-            retail = RetailService(
-                sessions, partial(fetch_listing, http), settings.retail, dispatcher
-            )
+            retail_fetch, bestbuy_stock = build_retail_fetch(settings, http)
+            retail = RetailService(sessions, retail_fetch, settings.retail, dispatcher)
             scheduler = build_scheduler(unifi, retail, dispatcher, settings, regions)
             ebay = EbayClient(settings.ebay) if settings.ebay.configured else None
             market = MarketService(sessions, ebay, settings.market, dispatcher)
@@ -307,6 +330,8 @@ async def _run_locked(
                     await ebay.aclose()
                 if bestbuy is not None:
                     await bestbuy.aclose()
+                if bestbuy_stock is not None:
+                    await bestbuy_stock.aclose()
     finally:
         await engine.dispose()
         logger.info("Tracker stopped")

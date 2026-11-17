@@ -377,6 +377,9 @@ class BestBuySettings(BaseSettings):
     # Category IDs (e.g. abcat0700000) for sold-out scans; trending works without any.
     categories: CommaList = Field(default_factory=list)
     interval_minutes: float = Field(default=60, ge=10)
+    # With a key, Best Buy store links are checked through the API this often (high-priority
+    # watches twice as often). Mind the API's 50,000 calls a day across all products.
+    stock_interval_seconds: float = Field(default=30, ge=10)
 
     _split = field_validator("categories", mode="before")(_split_commas)
 

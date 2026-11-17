@@ -41,6 +41,9 @@ SOURCE_NAMES = {
 _ASIN_RE = re.compile(r"/(?:dp|gp/product)/(?P<asin>[A-Z0-9]{10})")
 _BH_ID_RE = re.compile(r"/c/product/(?P<id>\d+)-")
 _NEWEGG_ID_RE = re.compile(r"/p/(?P<id>[A-Z0-9-]+)", re.IGNORECASE)
+# Best Buy SKUs: ?skuId=123, /site/name/123.p, /site/123.p, /product/name/ABC/sku/123,
+# /product/name/123.
+_BBY_PATH_RE = re.compile(r"(?:/(\d{6,9})\.p(?:$|[/?#])|/sku/(\d{6,9})(?:$|[/?#])|/(\d{6,9})/?$)")
 _MONEY_RE = re.compile(r"(\d[\d,]*)(?:\.(\d{1,2}))?")
 _BLOCK_MARKERS = (
     "captcha",
@@ -100,6 +103,16 @@ def parse_money(value: Any) -> int | None:
     return cents or None
 
 
+def bestbuy_sku(url: str) -> str | None:
+    """The numeric Best Buy SKU in any Best Buy product link, or None."""
+    parts = urlsplit(url)
+    sku_ids = parse_qs(parts.query).get("skuId")
+    if sku_ids and sku_ids[0].isdigit():
+        return sku_ids[0]
+    match = _BBY_PATH_RE.search(parts.path)
+    return next((group for group in match.groups() if group), None) if match else None
+
+
 def listing_sku(url: str, source: SourceKey, explicit: str | None = None) -> str:
     """Stable per-retailer id used as the variant SKU for URL listings."""
     if explicit:
@@ -107,8 +120,8 @@ def listing_sku(url: str, source: SourceKey, explicit: str | None = None) -> str
     parts = urlsplit(url)
     if source is SourceKey.AMAZON and (match := _ASIN_RE.search(parts.path)):
         return f"AMZN-{match.group('asin')}"
-    if source is SourceKey.BESTBUY and (sku_ids := parse_qs(parts.query).get("skuId")):
-        return f"BBY-{sku_ids[0]}"
+    if source is SourceKey.BESTBUY and (sku := bestbuy_sku(url)):
+        return f"BBY-{sku}"
     if source is SourceKey.BHPHOTO and (match := _BH_ID_RE.search(parts.path)):
         return f"BH-{match.group('id')}"
     if source is SourceKey.NEWEGG and (match := _NEWEGG_ID_RE.search(parts.path)):

@@ -210,6 +210,7 @@ Highlights:
 | `TRACKER_MONITOR_HOT_POLL_INTERVAL_SECONDS` | `60` | Re-check interval for hot listings |
 | `DISCORD_MENTION_KINDS` | `back_in_stock,early_access,new_listing,relisted` | Which events ping |
 | `DISCORD_ALERT_COOLDOWN_MINUTES` | `10` | Suppress repeats of the same alert |
+| `BESTBUY_API_KEY` | off | Best Buy watches checked through the official API (free key; needs a company-domain email) every `BESTBUY_STOCK_INTERVAL_SECONDS` (30) |
 | `NTFY_TOPIC` (+ `NTFY_SERVER`, `NTFY_TOKEN`) | off | Instant phone push for your own watches and rules (`tracker ntfy setup`) |
 | `SMS_ENABLED` + `TWILIO_*` + `SMS_TO_NUMBERS` | off | SMS for back in stock and Early Access |
 | `MESSAGE_CLEANUP_ENABLED` | `false` | Delete the bot's own messages after `MESSAGE_CLEANUP_TTL_MINUTES` |
