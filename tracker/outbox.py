@@ -199,6 +199,14 @@ class EventDispatcher:
         self._clock = clock
         self._lock = asyncio.Lock()
 
+    def add_sink(self, sink: EventSink) -> None:
+        """Register a destination after construction (Discord, SMS, ntfy are built later)."""
+        self._sinks.append(sink)
+
+    @property
+    def sink_names(self) -> list[str]:
+        return [sink.name for sink in self._sinks]
+
     async def dispatch(self) -> int:
         """Publish pending events. Returns how many were published (not counting stale ones)."""
         async with self._lock:

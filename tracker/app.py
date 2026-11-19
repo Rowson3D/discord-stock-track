@@ -238,9 +238,10 @@ async def _run_locked(
     await upgrade_async(url)
     engine = create_engine(url)
     sessions = create_sessionmaker(engine)
-    sink_list: list[EventSink] = list(sinks or [LoggingSink()])
     dispatcher = EventDispatcher(
-        sessions, sink_list, max_age=timedelta(minutes=settings.monitor.event_max_age_minutes)
+        sessions,
+        list(sinks or [LoggingSink()]),
+        max_age=timedelta(minutes=settings.monitor.event_max_age_minutes),
     )
 
     try:
@@ -270,17 +271,6 @@ async def _run_locked(
                 approved = await bootstrap_guilds(session, settings.discord)
             if approved:
                 logger.info("Pre-approved Discord server(s): %s", ", ".join(approved))
-            if settings.sms.configured:
-                sink_list.append(
-                    SmsSink(
-                        settings.sms,
-                        sessions,
-                        router,
-                        cooldown_minutes=settings.discord.alert_cooldown_minutes,
-                    )
-                )
-                logger.info("SMS alerts enabled for %d number(s)", len(settings.sms.to_numbers))
-
             bot = None
             if settings.discord.enabled:
                 bot = _build_bot(
@@ -291,29 +281,10 @@ async def _run_locked(
                     market,
                     dispatcher,
                     scheduler,
-                    router,
-                    sink_list,
                 )
             else:
                 logger.warning("DISCORD_BOT_TOKEN not set: running headless (events go to the log)")
-            if settings.ntfy.configured:
-                from tracker.ntfy import NtfySink
-
-                # The bot learns the owner from Discord when DISCORD_OWNER_IDS isn't set.
-                owners = (
-                    (lambda: bot.owner_ids)
-                    if bot is not None
-                    else (lambda: settings.discord.owner_ids)
-                )
-                sink_list.append(
-                    NtfySink(
-                        settings.ntfy,
-                        sessions,
-                        owners,
-                        cooldown_minutes=settings.discord.alert_cooldown_minutes,
-                    )
-                )
-                logger.info("ntfy phone push enabled (%s)", settings.ntfy.server)
+            register_alert_sinks(settings, sessions, dispatcher, router, bot)
 
             panel = _build_panel(settings, sessions, scheduler, bot, unifi, retail, discovery)
 
@@ -337,6 +308,40 @@ async def _run_locked(
         logger.info("Tracker stopped")
 
 
+def register_alert_sinks(
+    settings: Settings,
+    sessions: async_sessionmaker[AsyncSession],
+    dispatcher: EventDispatcher,
+    router: AlertRouter,
+    bot: TrackerBot | None,
+) -> list[str]:
+    """Register every configured alert destination with the dispatcher.
+
+    The dispatcher keeps its own list, so destinations must be added through it; appending
+    to a list after it was handed over silently dropped every alert once.
+    """
+    cooldown = settings.discord.alert_cooldown_minutes
+    if bot is not None:
+        from tracker.bot.sink import DiscordSink
+
+        dispatcher.add_sink(DiscordSink(bot, sessions, router, settings.discord))
+    if settings.sms.configured:
+        dispatcher.add_sink(SmsSink(settings.sms, sessions, router, cooldown_minutes=cooldown))
+        logger.info("SMS alerts enabled for %d number(s)", len(settings.sms.to_numbers))
+    if settings.ntfy.configured:
+        from tracker.ntfy import NtfySink
+
+        # The bot learns the owner from Discord when DISCORD_OWNER_IDS isn't set.
+        owners = (
+            (lambda: bot.owner_ids) if bot is not None else (lambda: settings.discord.owner_ids)
+        )
+        dispatcher.add_sink(NtfySink(settings.ntfy, sessions, owners, cooldown_minutes=cooldown))
+        logger.info("ntfy phone push enabled (%s)", settings.ntfy.server)
+    names = dispatcher.sink_names
+    logger.info("Alerts go to: %s", ", ".join(names))
+    return names
+
+
 def _build_bot(
     settings: Settings,
     sessions: async_sessionmaker[AsyncSession],
@@ -345,13 +350,10 @@ def _build_bot(
     market: MarketService,
     dispatcher: EventDispatcher,
     scheduler: Scheduler,
-    router: AlertRouter,
-    sink_list: list[EventSink],
 ) -> TrackerBot:
     # Imported lazily so headless runs and tests don't need a Discord client.
     from tracker.bot.cleanup import cleanup_messages
     from tracker.bot.client import TrackerBot
-    from tracker.bot.sink import DiscordSink
     from tracker.context import TrackerContext
 
     context = TrackerContext(
@@ -365,7 +367,6 @@ def _build_bot(
         started_at=datetime.now(UTC),
     )
     bot = TrackerBot(context)
-    sink_list.append(DiscordSink(bot, sessions, router, settings.discord))
     if not settings.discord.channel_id:
         logger.warning("DISCORD_CHANNEL_ID not set: alerts won't be posted anywhere")
     if settings.cleanup.enabled:
