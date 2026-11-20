@@ -78,6 +78,18 @@ async def test_back_in_stock_pings_watchers_subscribers_and_role(sessions):
     assert back.mentions == "<@1> <@2> <@&999>"
 
 
+async def test_subscription_regions_skip_other_countries(sessions):
+    """A subscription limited to some regions isn't pinged for other countries' stores."""
+    await _history(sessions, {}, {"status": StockStatus.OUT_OF_STOCK}, {})  # a US restock
+    async with sessions() as session, session.begin():
+        session.add(Watch(discord_user_id="home", listing_id=None, regions="us"))
+        session.add(Watch(discord_user_id="abroad", listing_id=None, regions="ca,uk"))
+        session.add(Watch(discord_user_id="anywhere", listing_id=None))
+    back = (await _plan(sessions))[-1]
+    assert back.event.kind is EventKind.BACK_IN_STOCK
+    assert back.mention_user_ids == ["anywhere", "home"]
+
+
 async def test_max_price_filters_watcher_pings(sessions):
     await _history(sessions, {}, {"status": StockStatus.OUT_OF_STOCK}, {})
     await _watch(sessions, "cheap", max_price=15000)

@@ -86,6 +86,31 @@ def format_kinds(kinds: Iterable[str] | None) -> str | None:
     return ",".join(chosen)
 
 
+def format_regions(values: Iterable[str] | None) -> str | None:
+    """Store region codes (us, ca, uk, eu…). None or nothing chosen means every region."""
+    cleaned = sorted({v.strip().lower() for v in values or () if v.strip()})
+    bad = [v for v in cleaned if len(v) > 8 or not v.isalnum()]
+    if bad:
+        raise ValueError(f"regions are short codes like us, ca, uk (not {', '.join(bad)})")
+    return ",".join(cleaned) or None
+
+
+def parse_regions(value: str | None) -> frozenset[str] | None:
+    """The regions a stored comma list allows, or None for every region."""
+    chosen = frozenset(r.strip().lower() for r in (value or "").split(",") if r.strip())
+    return chosen or None
+
+
+def in_regions(regions: str | None, event: RadarEvent) -> bool:
+    chosen = parse_regions(regions)
+    return chosen is None or (event.region or "").lower() in chosen
+
+
+def subscription_pings(watch: Watch, event: RadarEvent) -> bool:
+    """Does a "ping me for everything" subscription cover this event's region?"""
+    return in_regions(watch.regions, event)
+
+
 def _muted(muted_until: datetime | None, now: datetime) -> bool:
     if muted_until is None:
         return False
@@ -126,10 +151,8 @@ def rule_matches(rule: WatchRule, event: RadarEvent, now: datetime) -> bool:
             return False
     if rule.category and rule.category.lower() not in (event.category or "").lower():
         return False
-    if rule.regions:
-        regions = {r.strip().lower() for r in rule.regions.split(",") if r.strip()}
-        if (event.region or "").lower() not in regions:
-            return False
+    if not in_regions(rule.regions, event):
+        return False
     if not _price_ok(event, rule.max_price_cents):
         return False
     # Credible profit only (alerts carry flip values), so rules never chase asking prices.

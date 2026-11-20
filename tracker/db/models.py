@@ -360,6 +360,9 @@ class Watch(Base):
     kinds: Mapped[str | None] = mapped_column(String(200))
     # No pings until this time (the alert still posts in the channel).
     muted_until: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    # "Ping me for everything" only: the store regions that ping (comma list, e.g. "us").
+    # NULL = every region. A listing watch is already one region.
+    regions: Mapped[str | None] = mapped_column(String(100))
 
 
 class WatchRule(Base):

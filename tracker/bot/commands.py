@@ -46,6 +46,7 @@ from tracker.queries import (
     search_variants,
     set_priority,
     set_subscribed,
+    set_subscription_regions,
     tracker_stats,
     upcoming_restocks,
     user_watches,
@@ -55,7 +56,12 @@ from tracker.queries import (
 from tracker.services.unifi import slug_from_url
 from tracker.settings import MarketSettings
 from tracker.sources.web import parse_money
-from tracker.watching import resolve_listings, user_watch_rows
+from tracker.watching import (
+    format_regions,
+    parse_regions,
+    resolve_listings,
+    user_watch_rows,
+)
 
 if TYPE_CHECKING:
     from tracker.bot.client import TrackerBot
@@ -493,18 +499,53 @@ class TrackerCommands(commands.Cog):
             ephemeral=True,
         )
 
+    async def subscription_region_autocomplete(
+        self, interaction: discord.Interaction[Any], current: str
+    ) -> list[app_commands.Choice[str]]:
+        options = [*self.ctx.settings.unifi.regions, "all"]
+        last = current.split(",")[-1].strip().lower()
+        prefix = current[: len(current) - len(current.split(",")[-1])]
+        return [
+            app_commands.Choice(name=f"{prefix}{r}".upper(), value=f"{prefix}{r}")
+            for r in options
+            if r.startswith(last)
+        ][:25]
+
     @app_commands.command(
         description="Get pinged for every important alert (back in stock, EA, new)"
     )
-    async def subscribe(self, interaction: discord.Interaction[Any]) -> None:
+    @app_commands.describe(
+        regions="Only ping for these stores, e.g. us or us,ca ('all' for every region)"
+    )
+    @app_commands.autocomplete(regions=subscription_region_autocomplete)
+    async def subscribe(
+        self, interaction: discord.Interaction[Any], regions: str | None = None
+    ) -> None:
+        chosen: str | None = None
+        if regions is not None and regions.strip().lower() not in ("all", "any", "*"):
+            try:
+                chosen = format_regions(regions.split(","))
+            except ValueError as error:
+                await interaction.response.send_message(f"⚠️ {error}", ephemeral=True)
+                return
+        user, guild = str(interaction.user.id), str(interaction.guild_id)
         async with self.ctx.sessions() as session, session.begin():
-            changed = await set_subscribed(
-                session, str(interaction.user.id), True, str(interaction.guild_id)
-            )
-        await interaction.response.send_message(
-            "🔔 Subscribed to all important alerts." if changed else "You're already subscribed.",
-            ephemeral=True,
+            changed = await set_subscribed(session, user, True, guild)
+            if regions is not None:
+                await session.flush()
+                await set_subscription_regions(session, user, chosen, guild)
+        where = (
+            "in " + ", ".join(r.upper() for r in sorted(parse_regions(chosen) or ()))
+            if chosen
+            else "in every region"
         )
+        if changed:
+            text = f"🔔 Subscribed to all important alerts {where}."
+        elif regions is not None:
+            text = f"🔔 You'll now be pinged for important alerts {where}."
+        else:
+            text = "You're already subscribed. Add `regions:` to limit it to your country."
+        await interaction.response.send_message(text, ephemeral=True)
 
     @app_commands.command(description="Stop being pinged for every important alert")
     async def unsubscribe(self, interaction: discord.Interaction[Any]) -> None:

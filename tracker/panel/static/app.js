@@ -576,6 +576,17 @@ async function watchlistPage() {
   const subscribe = h("input", { type: "checkbox" });
   subscribe.checked = data.subscribed;
   subscribe.addEventListener("change", () => mutate("/api/subscription", "POST", { subscribed: subscribe.checked }, subscribe.checked ? "You'll be pinged for every important alert." : "Stopped pinging you for every alert."));
+  // Which stores the subscription pings for; none ticked = every region.
+  const subRegions = data.regions.map((r) => {
+    const box = h("input", { type: "checkbox", value: r });
+    box.checked = (data.subscription_regions || []).includes(r);
+    box.disabled = !data.subscribed;
+    box.addEventListener("change", () => {
+      const picked = subRegions.filter(([b]) => b.checked).map(([b]) => b.value);
+      mutate("/api/subscription", "POST", { subscribed: true, regions: picked }, picked.length ? `Pinging only for ${picked.map((x) => x.toUpperCase()).join(", ")}.` : "Pinging for every region.");
+    });
+    return [box, h("label", { class: "check" }, box, r.toUpperCase())];
+  });
 
   // Bulk bar
   const count = h("span", { class: "muted" }, "0 selected");
@@ -694,7 +705,8 @@ async function watchlistPage() {
     h("div", { class: "card" }, h("h2", {}, "Add to watchlist"),
       h("p", { class: "muted" }, "Paste a UniFi, Amazon, Best Buy, B&H, or Newegg link, or type a SKU or name. You'll be pinged in your home Discord server."),
       addForm,
-      h("label", { class: "check spaced" }, subscribe, `Ping me for every important alert (back in stock, Early Access, new, deals) · ${data.subscribers} subscribed in total`)),
+      h("label", { class: "check spaced" }, subscribe, `Ping me for every important alert (back in stock, Early Access, new, deals) · ${data.subscribers} subscribed in total`),
+      h("div", { class: "row" }, h("span", { class: "muted" }, "Only for stores in:"), subRegions.map(([, label]) => label), h("span", { class: "muted" }, "(none ticked = every region)"))),
     h("div", { class: "card" }, h("div", { class: "row spread" }, h("h2", {}, `My watches (${mine.length})`), mine.length ? bulkBar : null), myTable),
     rulesCard,
     h("div", { class: "card" }, h("h2", {}, `Members' watches (${members.length})`), memberTable));

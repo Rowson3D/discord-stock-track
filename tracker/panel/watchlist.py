@@ -18,8 +18,16 @@ from sqlalchemy import delete, func, or_, select
 from tracker.db.models import Listing, Product, Valuation, Variant, Watch, WatchRule
 from tracker.domain import Priority
 from tracker.guilds import home_guild_id
-from tracker.queries import add_watches, set_subscribed
-from tracker.watching import ALERT_KEYS, RULE_DEFAULT_KINDS, Resolved, format_kinds, parse_kinds
+from tracker.queries import add_watches, set_subscribed, set_subscription_regions
+from tracker.watching import (
+    ALERT_KEYS,
+    RULE_DEFAULT_KINDS,
+    Resolved,
+    format_kinds,
+    format_regions,
+    parse_kinds,
+    parse_regions,
+)
 from tracker.watchtest import AlertPoster, SampleAlertError, Verdict, plan_watch_test
 
 Record = Callable[..., Awaitable[None]]
@@ -57,6 +65,8 @@ class PriorityBody(BaseModel):
 
 class SubscriptionBody(BaseModel):
     subscribed: bool
+    # Leave out to keep the current regions; [] means every region.
+    regions: list[str] | None = None
 
 
 class RuleBody(BaseModel):
@@ -92,12 +102,10 @@ def _kinds_or_422(kinds: list[str] | None) -> str | None:
 
 
 def _regions(values: list[str] | None) -> str | None:
-    if not values:
-        return None
-    cleaned = sorted({v.strip().lower() for v in values if v.strip()})
-    if any(len(v) > 8 or not v.isalnum() for v in cleaned):
-        raise HTTPException(status_code=422, detail="regions are short codes like us, ca, uk")
-    return ",".join(cleaned) or None
+    try:
+        return format_regions(values)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 def _clean(text: str | None) -> str | None:
@@ -237,11 +245,19 @@ def add_watchlist_routes(
                     "flip_net_cents": valuation.flip_net_cents if valuation else None,
                 }
             )
+        my_subscription = next(
+            (
+                s
+                for s in subscriptions
+                if s.discord_user_id == me and (s.guild_id or home_id) == home_id
+            ),
+            None,
+        )
         return {
             "owner_configured": bool(me),
-            "subscribed": any(
-                s.discord_user_id == me and (s.guild_id or home_id) == home_id
-                for s in subscriptions
+            "subscribed": my_subscription is not None,
+            "subscription_regions": sorted(
+                parse_regions(my_subscription.regions if my_subscription else None) or ()
             ),
             "subscribers": len({s.discord_user_id for s in subscriptions}),
             "items": items,
@@ -415,11 +431,21 @@ def add_watchlist_routes(
     async def subscription(body: SubscriptionBody, client: str = Depends(owner)) -> dict[str, Any]:
         user = require_owner_id()
         guild = await home()
+        regions = _regions(body.regions)
         async with sessions() as session, session.begin():
             changed = await set_subscribed(session, user, body.subscribed, guild)
+            if body.subscribed and body.regions is not None:
+                await session.flush()
+                await set_subscription_regions(session, user, regions, guild)
         if changed:
             await record("watch.subscribe" if body.subscribed else "watch.unsubscribe", client)
-        return {"subscribed": body.subscribed, "changed": changed}
+        if body.subscribed and body.regions is not None:
+            await record("watch.subscription_regions", client, details={"regions": regions})
+        return {
+            "subscribed": body.subscribed,
+            "changed": changed,
+            "regions": sorted(parse_regions(regions) or ()),
+        }
 
     # ── rules ────────────────────────────────────────────────────────────
 

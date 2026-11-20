@@ -188,6 +188,20 @@ async def set_subscribed(
     return False
 
 
+async def set_subscription_regions(
+    session: AsyncSession, user_id: str, regions: str | None, guild_id: str | None = None
+) -> bool:
+    """Limit 'ping me for everything' to some regions (None = all). False if not subscribed."""
+    condition = Watch.guild_id.is_(None) if guild_id is None else Watch.guild_id == guild_id
+    existing = await session.scalar(
+        select(Watch).where(Watch.discord_user_id == user_id, Watch.listing_id.is_(None), condition)
+    )
+    if existing is None:
+        return False
+    existing.regions = regions
+    return True
+
+
 async def recent_observations(
     session: AsyncSession, listing_id: int, limit: int = 5
 ) -> list[StockObservation]:

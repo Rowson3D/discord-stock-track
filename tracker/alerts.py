@@ -18,7 +18,13 @@ from tracker.db.models import Event, Watch, WatchRule
 from tracker.domain import EventKind
 from tracker.guilds import GuildConfig
 from tracker.outbox import RadarEvent
-from tracker.watching import is_price_drop, now_utc, rule_matches, watch_pings
+from tracker.watching import (
+    is_price_drop,
+    now_utc,
+    rule_matches,
+    subscription_pings,
+    watch_pings,
+)
 
 __all__ = ["IMPORTANT_KINDS", "AlertPlan", "AlertRouter", "is_price_drop", "strip_valuation"]
 
@@ -94,9 +100,7 @@ class AlertRouter:
             for w in watches
             if (w.guild_id or home_guild_id) == guild.guild_id or guild.guild_id == "global"
         ]
-        subscribers = sorted(
-            {w.discord_user_id for w in mine if w.listing_id is None and not _muted_now(w, now)}
-        )
+        subscribers = [w for w in mine if w.listing_id is None and not _muted_now(w, now)]
         rules = [
             r
             for r in await session.scalars(select(WatchRule).where(WatchRule.enabled))
@@ -126,7 +130,7 @@ class AlertRouter:
     def _plan_one(
         event: RadarEvent,
         watches: list[Watch],
-        subscribers: list[str],
+        subscribers: list[Watch],
         rules: list[WatchRule],
         guild: GuildConfig,
         now: datetime,
@@ -141,7 +145,8 @@ class AlertRouter:
         plan = AlertPlan(event=event, important=important, channel_id=channel)
         mentioned = watchers | ruled
         if event.kind in mention_kinds:
-            mentioned |= set(subscribers)
+            # A subscription limited to some regions skips other countries' stores.
+            mentioned |= {w.discord_user_id for w in subscribers if subscription_pings(w, event)}
             plan.mention_text = guild.alert_mention.strip()
         plan.mention_user_ids = sorted(mentioned)
         return plan

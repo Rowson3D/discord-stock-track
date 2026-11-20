@@ -141,6 +141,18 @@ async def test_bulk_priority_and_subscription(sessions):
         sub = await c.post("/api/subscription", json={"subscribed": True}, headers=WRITE)
         assert sub.json()["changed"] is True
         assert (await c.get("/api/watchlist")).json()["subscribed"] is True
+        limited = await c.post(
+            "/api/subscription", json={"subscribed": True, "regions": ["US"]}, headers=WRITE
+        )
+        assert limited.json()["regions"] == ["us"]
+        assert (await c.get("/api/watchlist")).json()["subscription_regions"] == ["us"]
+        kept = await c.post("/api/subscription", json={"subscribed": True}, headers=WRITE)
+        assert kept.json()["changed"] is False
+        assert (await c.get("/api/watchlist")).json()["subscription_regions"] == ["us"]
+        bad = await c.post(
+            "/api/subscription", json={"subscribed": True, "regions": ["u s!"]}, headers=WRITE
+        )
+        assert bad.status_code == 422
 
         removed = await c.post(
             "/api/watches/bulk", json={"ids": ids, "action": "remove"}, headers=WRITE
