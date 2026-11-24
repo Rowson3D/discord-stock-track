@@ -129,16 +129,26 @@ const KINDS = {
 };
 const KIND_STYLE = { deal: "good", back_in_stock: "good", new_listing: "info", early_access: "info", sold_out: "bad", delisted: "neutral" };
 
+const SOURCES = { unifi: "UniFi", amazon: "Amazon", bestbuy: "Best Buy", bhphoto: "B&H", newegg: "Newegg" };
+
+// "US" for the UniFi store, "Amazon US" for everything else.
+function storeName(listing) {
+  const region = (listing.region || "").toUpperCase();
+  return listing.source && listing.source !== "unifi" ? `${SOURCES[listing.source] || listing.source} ${region}` : region;
+}
+
 function productLink(key, text) {
   return h("a", { href: `#/product/${encodeURIComponent(key)}` }, text);
 }
 
+// Columns: { label, cell, num?: right-aligned figures, wide?: hidden on phones }.
 function table(columns, rows, emptyText = "Nothing here yet.") {
   if (!rows.length) return h("div", { class: "empty" }, emptyText);
+  const cls = (c) => [c.num ? "num" : "", c.wide ? "wide" : ""].join(" ").trim();
   return h("div", { class: "table-wrap" },
     h("table", {},
-      h("thead", {}, h("tr", {}, columns.map((c) => h("th", { class: c.num ? "num" : "" }, c.label)))),
-      h("tbody", {}, rows.map((row) => h("tr", {}, columns.map((c) => h("td", { class: c.num ? "num" : "" }, c.cell(row))))))));
+      h("thead", {}, h("tr", {}, columns.map((c) => h("th", { class: cls(c) }, c.label)))),
+      h("tbody", {}, rows.map((row) => h("tr", {}, columns.map((c) => h("td", { class: cls(c) }, c.cell(row))))))));
 }
 
 // ── chart (inline SVG) ───────────────────────────────────────────────────
@@ -174,30 +184,32 @@ function lineChart(series, { height = 200, format = (v) => v, labels = [] } = {}
 // ── shell ────────────────────────────────────────────────────────────────
 
 const NAV = [
-  ["#/", "Overview"],
-  ["#/opportunities", "Opportunities"],
+  ["#/", "Home"],
+  ["#/flips", "Flips"],
   ["#/watchlist", "Watchlist"],
-  ["#/discovery", "Discovery"],
   ["#/radar", "Radar"],
-  ["#/servers", "Servers"],
-  ["#/audit", "Audit log"],
+  ["#/discovery", "Discovery", "discovery"],
+  ["#/system", "System"],
 ];
+// Optional pages show only when their feature is on (learned from /api/overview).
+const features = { discovery: false };
 
 function shell(content, title, subtitle) {
   const hash = location.hash || "#/";
-  const nav = h("nav", { class: "nav" }, NAV.map(([href, label]) => {
+  const nav = h("nav", { class: "nav" }, NAV.filter(([, , feature]) => !feature || features[feature]).map(([href, label]) => {
     const active = href === "#/" ? hash === "#/" || hash === "" : hash.startsWith(href);
-    return h("a", { href, class: active ? "active" : "" }, label);
+    return h("a", { href, class: active ? "active" : "", "aria-current": active ? "page" : null }, label);
   }));
   const side = h("aside", { class: "side" },
-    h("div", { class: "brand" }, h("img", { src: "/static/icon.svg", alt: "" }), "FlipScout"),
+    h("a", { class: "brand", href: "#/" }, h("img", { src: "/static/icon.svg", alt: "" }), "FlipScout"),
     nav,
     h("div", { class: "spacer" }),
-    h("button", { onclick: logout }, "Log out"),
-    h("button", { class: "danger", onclick: revokeAll, title: "End every panel session, including this one" }, "Sign out everywhere"));
+    h("div", { class: "session" },
+      h("button", { class: "link", onclick: logout }, "Log out"),
+      h("button", { class: "link danger", onclick: revokeAll, title: "End every panel session, including this one" }, "Sign out everywhere")));
   const main = h("main", { class: "main" },
     h("div", { class: "topbar" },
-      h("div", {}, h("h1", {}, title), subtitle ? h("div", { class: "muted" }, subtitle) : null),
+      title ? h("div", { class: "heading" }, h("h1", {}, title), subtitle ? h("div", { class: "muted" }, subtitle) : null) : h("div", {}),
       searchBox()),
     content);
   app.className = "";
@@ -299,51 +311,54 @@ async function checkDeals() {
 
 // ── pages ────────────────────────────────────────────────────────────────
 
-async function overviewPage() {
-  const data = await api("/api/overview");
-  const v = data.valuations || {};
-  const tile = (label, value, sub) => h("div", { class: "card tile" }, h("div", { class: "label" }, label), h("div", { class: "value" }, value), sub ? h("div", { class: "sub" }, sub) : null);
-  const regionRows = Object.entries(data.regions).sort(([a], [b]) => a.localeCompare(b));
-  const content = h("div", {},
-    h("div", { class: "grid tiles" },
-      tile("Credible flips", data.credible_flips, "sold, your sales, or sold-out history"),
-      tile("Active deals", data.active_deals, "buyable now, credible profit"),
-      tile("Events (24h)", data.events_24h, `${data.pending_events} waiting to send`),
-      tile("Watches", data.watches, `${data.subscribers} subscribers`),
-      tile("Uptime", duration(data.uptime_seconds), `v${data.version}`)),
-    h("div", { class: "grid cols-2" },
-      h("div", { class: "card" }, h("h2", {}, "Stores"),
-        table([
-          { label: "Region", cell: ([r]) => r.toUpperCase() },
-          { label: "In stock", num: true, cell: ([, x]) => (x.counts.in_stock || 0) + (x.counts.low_stock || 0) },
-          { label: "Sold out", num: true, cell: ([, x]) => x.counts.out_of_stock || 0 },
-          { label: "Coming soon", num: true, cell: ([, x]) => x.counts.coming_soon || 0 },
-          { label: "Last check", cell: ([, x]) => when(x.last_checked) },
-        ], regionRows)),
-      h("div", { class: "card" }, h("h2", {}, "Valuations"),
-        h("dl", { class: "kv" },
-          h("dt", {}, "Sold-out market"), h("dd", {}, data.sold_out_market),
-          h("dt", {}, "Capped (in stock)"), h("dd", {}, v.capped || 0),
-          h("dt", {}, "In stock, asks under the cap"), h("dd", {}, data.in_stock_under_cap),
-          h("dt", {}, "eBay sold / your sales"), h("dd", {}, (v.sold || 0) + (v.manual || 0)),
-          h("dt", {}, "Not enough data"), h("dd", {}, v.none || 0)),
-        h("p", { class: "muted" }, "Capped items are in stock at the store, so eBay asking prices don't count as profit. Credible flips come from real sales or prices recorded while the store was sold out.")),
-      h("div", { class: "card" }, h("h2", {}, "Jobs"),
-        table([
-          { label: "Job", cell: (j) => h("span", { class: "mono" }, j.name) },
-          { label: "Runs", num: true, cell: (j) => j.runs },
-          { label: "Failures", num: true, cell: (j) => (j.failures ? h("span", { class: "neg" }, j.failures) : 0) },
-          { label: "Next", num: true, cell: (j) => (j.running ? "running" : `in ${duration(j.next_in_seconds)}`) },
-        ], data.jobs, "The panel isn't attached to a running scheduler.")),
-      h("div", { class: "card" }, h("h2", {}, "Sources"),
-        h("dl", { class: "kv" },
-          h("dt", {}, "Discord bot"), h("dd", {}, onOff(data.sources.discord)),
-          h("dt", {}, "eBay API"), h("dd", {}, onOff(data.sources.ebay)),
-          h("dt", {}, "SMS"), h("dd", {}, onOff(data.sources.sms)),
-          h("dt", {}, "UniFi regions"), h("dd", {}, data.sources.unifi_regions.join(", ").toUpperCase()),
-          h("dt", {}, "Tailscale login allowlist"), h("dd", {}, onOff(data.sources.tailscale_logins))),
-        h("p", { class: "muted" }, "Keys stay on the server. The panel only shows whether each one is set."))));
-  shell(content, "Overview", `Up ${duration(data.uptime_seconds)} · refreshes every 30s`);
+const IN_STOCK = new Set(["in_stock", "low_stock"]);
+
+async function homePage() {
+  const [data, market, watch, events] = await Promise.all([
+    api("/api/overview"),
+    api("/api/market?view=flips&limit=200"),
+    api("/api/watchlist"),
+    api("/api/events?limit=10"),
+  ]);
+  features.discovery = data.sources.discovery;
+  const buy = market.items.filter((r) => r.valuation.deal_active);
+  const mine = watch.items.filter((w) => w.owner)
+    .sort((a, b) => Number(IN_STOCK.has(b.listing.status)) - Number(IN_STOCK.has(a.listing.status)) || a.listing.sku.localeCompare(b.listing.sku));
+  const product = (sku, key, name) => h("div", {}, productLink(key, sku), h("div", { class: "muted small" }, name));
+  const buyTable = table([
+    { label: "Product", cell: (r) => product(r.sku, r.variant_id, r.name) },
+    { label: "Store", cell: (r) => (r.region || "").toUpperCase() },
+    { label: "Buy", num: true, cell: (r) => money(r.valuation.retail_cents) },
+    { label: "Profit", num: true, cell: (r) => signedMoney(r.valuation.flip_net_cents) },
+    { label: "ROI", num: true, wide: true, cell: (r) => pct(r.valuation.flip_roi) },
+    { label: "", cell: (r) => (r.url ? h("a", { class: "nowrap", href: r.url, target: "_blank", rel: "noopener noreferrer" }, "Buy ↗") : "") },
+  ], buy, "Nothing worth buying right now. You'll be pinged when something is.");
+  const watchTable = table([
+    { label: "Product", cell: (w) => product(w.listing.sku, w.listing.variant_id, w.listing.name) },
+    { label: "Store", cell: (w) => storeName(w.listing) },
+    { label: "Status", cell: (w) => statusPill(w.listing.status, w.listing.delisted) },
+    { label: "Price", num: true, cell: (w) => money(w.listing.price_cents, w.listing.currency) },
+  ], mine, "You aren't watching anything yet.");
+  const latest = events.items.length
+    ? h("ol", { class: "latest" }, events.items.map((e) => h("li", {},
+      h("span", { class: `kind ${KIND_STYLE[e.kind] || ""}` }, KINDS[e.kind] || e.kind), " ",
+      e.sku ? productLink(e.sku, e.sku) : null,
+      e.region ? h("span", { class: "muted" }, ` ${e.region.toUpperCase()}`) : null,
+      h("div", { class: "muted small" }, when(e.occurred_at)))))
+    : h("p", { class: "muted" }, "Nothing yet.");
+  const regions = Object.entries(data.regions).sort(([a], [b]) => a.localeCompare(b));
+  const stores = h("dl", { class: "kv" }, regions.flatMap(([r, x]) => [
+    h("dt", {}, r.toUpperCase()),
+    h("dd", {}, `${(x.counts.in_stock || 0) + (x.counts.low_stock || 0)} in stock · ${x.counts.out_of_stock || 0} sold out · `, h("span", { class: "muted" }, when(x.last_checked)))]));
+  const content = h("div", { class: "home" },
+    h("div", { class: "primary" },
+      h("section", { class: "card" }, h("h2", {}, "Buy now", buy.length ? h("span", { class: "count" }, buy.length) : null), buyTable),
+      h("section", { class: "card" }, h("div", { class: "row spread" }, h("h2", {}, "Your watches"), h("a", { href: "#/watchlist" }, "Manage")), watchTable)),
+    h("div", { class: "secondary" },
+      h("section", { class: "card" }, h("div", { class: "row spread" }, h("h2", {}, "Latest"), h("a", { href: "#/radar" }, "All")), latest),
+      h("section", { class: "card" }, h("h2", {}, "Stores"), stores,
+        h("p", { class: "muted small" }, `v${data.version} · up ${duration(data.uptime_seconds)}`))));
+  shell(content, null);
 }
 
 function onOff(value) {
@@ -351,17 +366,17 @@ function onOff(value) {
 }
 
 const VIEWS = {
-  flips: ["Credible flips", "Profit backed by eBay sold prices, your recorded sales, or prices seen while the store was sold out."],
-  sold_out: ["Sold-out market", "The store is sold out, so eBay asking prices are the real market. Watch these for restocks."],
-  capped: ["Hyped in stock", "In stock at the store but listed far above retail on eBay. Asking prices only; not profit."],
-  all: ["Everything valued", "Every item with enough eBay data, best score first."],
+  flips: ["Flips", "Profit backed by eBay sold prices, your recorded sales, or prices seen while the store was sold out."],
+  sold_out: ["Sold out", "The store is sold out, so eBay asking prices are the real market. Watch these for restocks."],
+  capped: ["Hyped", "In stock at the store but listed far above retail on eBay. Asking prices only, not profit."],
+  all: ["All valued", "Every item with enough eBay data, best score first."],
 };
 
 async function opportunitiesPage(params) {
   const view = VIEWS[params.get("view")] ? params.get("view") : "flips";
   const q = params.get("q") || "";
   const data = await api(`/api/market?view=${view}&q=${encodeURIComponent(q)}`);
-  const go = (next, query = q) => { location.hash = `#/opportunities?view=${next}${query ? `&q=${encodeURIComponent(query)}` : ""}`; };
+  const go = (next, query = q) => { location.hash = `#/flips?view=${next}${query ? `&q=${encodeURIComponent(query)}` : ""}`; };
   const filter = h("input", { type: "search", value: q, placeholder: "Filter…", "aria-label": "Filter items" });
   filter.addEventListener("change", () => go(view, filter.value.trim()));
   const tabs = h("div", { class: "tabs" },
@@ -397,8 +412,8 @@ async function opportunitiesPage(params) {
   const empty = view === "flips"
     ? "No credible flips yet. They appear once an item has sold-out history (2+ days for low confidence, 4+ days with 3+ sellers for a deal), eBay sold data, or your own /comp sales."
     : "Nothing matches.";
-  shell(h("div", {}, tabs, h("p", { class: "muted" }, VIEWS[view][1]), h("div", { class: "card" }, table(columns, data.items, empty))),
-    "Opportunities", `${data.items.length} item(s)`);
+  shell(h("div", {}, tabs, h("p", { class: "muted" }, VIEWS[view][1]), table(columns, data.items, empty)),
+    "Flips", `${data.items.length} item${data.items.length === 1 ? "" : "s"}`);
 }
 
 function verdict(v) {
@@ -464,27 +479,49 @@ async function productPage(key) {
 
 const RADAR_FILTERS = [["", "All"], ["deal", "Deals"], ["back_in_stock", "Back in stock"], ["new_listing", "New"], ["early_access", "Early Access"], ["sold_out", "Sold out"], ["price_change", "Price"]];
 
+function remembered(key, fallback = "") {
+  try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; }
+}
+
+function remember(key, value) {
+  try { localStorage.setItem(key, value); } catch { /* private window */ }
+}
+
+const BUYABLE = new Set(["back_in_stock", "relisted", "new_listing", "early_access", "deal"]);
+
 async function radarPage(params) {
   const kind = params.get("kind") || "";
-  const data = await api(`/api/events?limit=150${kind ? `&kind=${encodeURIComponent(kind)}` : ""}`);
+  const region = params.has("region") ? params.get("region") : remembered("radar-region");
+  const data = await api(`/api/events?limit=300${kind ? `&kind=${encodeURIComponent(kind)}` : ""}`);
+  const regions = [...new Set(data.items.map((e) => e.region).filter(Boolean))].sort();
+  const go = (k, r) => {
+    remember("radar-region", r);
+    const q = new URLSearchParams();
+    if (k) q.set("kind", k);
+    if (r) q.set("region", r);
+    location.hash = `#/radar${q.toString() ? `?${q}` : ""}`;
+  };
+  const pick = h("select", { "aria-label": "Region" }, h("option", { value: "" }, "All regions"),
+    regions.map((r) => h("option", { value: r, selected: r === region }, r.toUpperCase())));
+  pick.addEventListener("change", () => go(kind, pick.value));
   const tabs = h("div", { class: "tabs" }, RADAR_FILTERS.map(([key, label]) =>
-    h("button", { class: key === kind ? "on" : "", onclick: () => { location.hash = key ? `#/radar?kind=${key}` : "#/radar"; } }, label)));
-  const feed = data.items.length
-    ? h("div", { class: "feed" }, data.items.map((e) => h("div", { class: "card event" },
-      h("div", { class: "when" }, when(e.occurred_at)),
-      h("div", {},
-        h("div", { class: "row" },
-          h("span", { class: `pill ${KIND_STYLE[e.kind] || "neutral"}` }, KINDS[e.kind] || e.kind),
-          e.sku ? productLink(e.sku, e.sku) : null,
-          e.region ? h("span", { class: "muted" }, e.region.toUpperCase()) : null,
-          e.price_cents !== null ? h("span", {}, money(e.price_cents, e.currency)) : null,
-          e.early_access ? h("span", { class: "pill info" }, "EA") : null),
-        h("div", { class: "muted" }, e.name || ""),
-        e.kind === "deal" && e.new_value ? h("div", { class: "pos" }, e.new_value) : null,
-        ["price_change", "restock_eta", "status_change"].includes(e.kind) ? h("div", {}, `${e.old_value || "—"} → ${e.new_value || "—"}`) : null,
-        e.kind !== "deal" && e.profit_text ? h("div", { class: "pos" }, e.profit_text) : null))))
-    : h("div", { class: "card empty" }, "No events yet.");
-  shell(h("div", {}, tabs, feed), "Radar", "Newest first · refreshes every 30s");
+    h("button", { class: key === kind ? "on" : "", onclick: () => go(key, region) }, label)));
+  const items = data.items.filter((e) => !region || e.region === region).slice(0, 150);
+  const detail = (e) => {
+    if (e.kind === "deal" && e.new_value) return h("span", { class: "pos" }, e.new_value);
+    if (["price_change", "restock_eta", "status_change"].includes(e.kind)) return `${e.old_value || "—"} → ${e.new_value || "—"}`;
+    // Profit only matters when you can buy it.
+    return e.profit_text && BUYABLE.has(e.kind) ? h("span", { class: "pos" }, e.profit_text) : "";
+  };
+  const feed = table([
+    { label: "When", cell: (e) => h("span", { class: "muted nowrap" }, when(e.occurred_at)) },
+    { label: "Event", cell: (e) => h("span", { class: `kind ${KIND_STYLE[e.kind] || ""}` }, KINDS[e.kind] || e.kind) },
+    { label: "Product", cell: (e) => h("div", {}, e.sku ? productLink(e.sku, e.sku) : "—", e.early_access ? h("span", { class: "pill info" }, "EA") : null, h("div", { class: "muted small" }, e.name || "")) },
+    { label: "Store", cell: (e) => storeName(e) },
+    { label: "Price", num: true, wide: true, cell: (e) => (e.price_cents !== null ? money(e.price_cents, e.currency) : "—") },
+    { label: "Detail", wide: true, cell: detail },
+  ], items, "Nothing on the radar yet.");
+  shell(h("div", {}, h("div", { class: "filters" }, tabs, pick), feed), "Radar", "Updates every 30 seconds");
 }
 
 // ── watchlist ────────────────────────────────────────────────────────────
@@ -595,21 +632,26 @@ async function watchlistPage() {
     if (action === "remove" && !confirm(`Remove ${selected.size} watch(es)?`)) return;
     await mutate("/api/watches/bulk", "POST", { ids: [...selected], action, hours }, (r) => `${r.count} watch(es) ${action === "remove" ? "removed" : action === "mute" ? "muted" : "unmuted"}.`);
   };
-  const bulkBar = h("div", { class: "row bulkbar" }, count,
+  const bulkBar = h("div", { class: "row bulkbar", hidden: true }, count,
     h("button", { onclick: bulk("mute", 24) }, "Mute 24h"),
     h("button", { onclick: bulk("mute", 168) }, "Mute 7 days"),
     h("button", { onclick: bulk("unmute") }, "Unmute"),
     h("button", { class: "danger", onclick: bulk("remove") }, "Remove"));
-  const tick = (id, box) => { if (box.checked) selected.add(id); else selected.delete(id); count.textContent = `${selected.size} selected`; };
+  // The bulk actions appear once something is ticked.
+  const tick = (id, box) => { if (box.checked) selected.add(id); else selected.delete(id); count.textContent = `${selected.size} selected`; bulkBar.hidden = !selected.size; };
 
   const editRow = (w, tr) => {
+    const open = tr.nextElementSibling;
+    if (open && open.classList.contains("editor")) { open.remove(); return; }
     const price = h("input", { type: "text", inputmode: "decimal", value: w.max_price_cents ? (w.max_price_cents / 100).toFixed(2) : "", placeholder: "No target", "aria-label": "Target price" });
     const kinds = kindPicker(keys, w.kinds);
     const err = h("div", { class: "error" });
-    const editor = h("tr", { class: "editor" }, h("td", { colspan: 7 },
+    const muted = mutedText(w.muted_until);
+    const editor = h("tr", { class: "editor" }, h("td", { colspan: 6 },
       h("div", { class: "grid" },
         h("label", {}, "Only ping at or below ", price),
         kinds.el,
+        h("label", {}, "Check this listing ", prioritySelect(w), h("span", { class: "muted small" }, " (high = every few seconds)")),
         err,
         h("div", { class: "row" },
           h("button", { class: "primary", onclick: async () => {
@@ -617,7 +659,10 @@ async function watchlistPage() {
             try { cents = dollarsToCents(price.value); } catch (e) { err.textContent = e.message; return; }
             await mutate(`/api/watches/${w.watch_id}`, "PATCH", { max_price_cents: cents, kinds: kinds.value() }, "Watch updated.");
           } }, "Save"),
-          h("button", { onclick: () => editor.remove() }, "Cancel")))));
+          h("button", { onclick: () => editor.remove() }, "Cancel"),
+          muted ? h("button", { onclick: () => mutate(`/api/watches/${w.watch_id}`, "PATCH", { mute_hours: 0 }, "Unmuted.") }, "Unmute")
+            : h("button", { title: "No pings for 24 hours", onclick: () => mutate(`/api/watches/${w.watch_id}`, "PATCH", { mute_hours: 24 }, "Muted for 24 hours.") }, "Mute 24h"),
+          h("button", { class: "danger", onclick: () => confirm(`Stop watching ${w.listing.sku} ${w.listing.region.toUpperCase()}?`) && mutate(`/api/watches/${w.watch_id}`, "DELETE", undefined, "Removed.") }, "Remove watch")))));
     tr.after(editor);
   };
 
@@ -625,7 +670,7 @@ async function watchlistPage() {
   const testRow = async (w, tr) => {
     const next = tr.nextElementSibling;
     if (next && next.classList.contains("editor")) next.remove();
-    const cell = h("td", { colspan: 7 }, h("div", { class: "muted" }, "Checking…"));
+    const cell = h("td", { colspan: 6 }, h("div", { class: "muted" }, "Checking…"));
     const editor = h("tr", { class: "editor" }, cell);
     tr.after(editor);
     const show = async (kind, send) => {
@@ -665,7 +710,7 @@ async function watchlistPage() {
   };
 
   const myTable = mine.length ? h("div", { class: "table-wrap" }, h("table", {},
-    h("thead", {}, h("tr", {}, ["", "Product", "Store", "Price", "Alerts", "Priority", ""].map((label, i) => h("th", { class: i === 3 ? "num" : "" }, label)))),
+    h("thead", {}, h("tr", {}, ["", "Product", "Store", "Price", "Alerts", ""].map((label, i) => h("th", { class: i === 3 ? "num" : "" }, label)))),
     h("tbody", {}, mine.map((w) => {
       const box = h("input", { type: "checkbox", "aria-label": `Select ${w.listing.sku}` });
       box.addEventListener("change", () => tick(w.watch_id, box));
@@ -674,17 +719,13 @@ async function watchlistPage() {
         h("td", {}, box),
         h("td", {}, productLink(w.listing.variant_id, w.listing.sku), h("div", { class: "muted" }, w.listing.name),
           w.flip_net_cents !== null ? h("div", {}, "Flip ", signedMoney(w.flip_net_cents)) : null),
-        h("td", {}, h("div", { class: "row" }, `${w.listing.source === "unifi" ? "" : `${w.listing.source} `}${w.listing.region.toUpperCase()}`, statusPill(w.listing.status, w.listing.delisted), muted)),
+        h("td", {}, h("div", { class: "row" }, storeName(w.listing), statusPill(w.listing.status, w.listing.delisted), muted)),
         h("td", { class: "num" }, money(w.listing.price_cents, w.listing.currency),
           w.max_price_cents ? h("div", { class: "muted" }, `ping ≤ ${money(w.max_price_cents)}`) : null),
         h("td", {}, kindsText(w.kinds, keys)),
-        h("td", {}, prioritySelect(w)),
         h("td", {}, h("div", { class: "row actions" },
-          h("button", { onclick: (e) => editRow(w, e.target.closest("tr")) }, "Edit"),
-          h("button", { title: "See what this watch alerts you about, and send a sample alert", onclick: (e) => testRow(w, e.target.closest("tr")) }, "Test"),
-          muted ? h("button", { onclick: () => mutate(`/api/watches/${w.watch_id}`, "PATCH", { mute_hours: 0 }, "Unmuted.") }, "Unmute")
-            : h("button", { title: "No pings for 24 hours", onclick: () => mutate(`/api/watches/${w.watch_id}`, "PATCH", { mute_hours: 24 }, "Muted for 24 hours.") }, "Mute"),
-          h("button", { class: "danger", onclick: () => confirm(`Stop watching ${w.listing.sku} ${w.listing.region.toUpperCase()}?`) && mutate(`/api/watches/${w.watch_id}`, "DELETE", undefined, "Removed.") }, "Remove"))));
+          h("button", { class: "link", onclick: (e) => editRow(w, e.target.closest("tr")) }, "Edit"),
+          h("button", { class: "link", title: "See what this watch alerts you about, and send a sample alert", onclick: (e) => testRow(w, e.target.closest("tr")) }, "Test"))));
       return tr;
     })))) : h("div", { class: "empty" }, "You aren't watching anything yet. Add a product above, or create a rule below.");
 
@@ -702,15 +743,16 @@ async function watchlistPage() {
 
   const content = h("div", { class: "grid" },
     data.owner_configured ? null : h("div", { class: "card note-warn" }, "Set DISCORD_OWNER_IDS in .env so watches made here can ping your Discord account."),
-    h("div", { class: "card" }, h("h2", {}, "Add to watchlist"),
-      h("p", { class: "muted" }, "Paste a UniFi, Amazon, Best Buy, B&H, or Newegg link, or type a SKU or name. You'll be pinged in your home Discord server."),
-      addForm,
-      h("label", { class: "check spaced" }, subscribe, `Ping me for every important alert (back in stock, Early Access, new, deals) · ${data.subscribers} subscribed in total`),
-      h("div", { class: "row" }, h("span", { class: "muted" }, "Only for stores in:"), subRegions.map(([, label]) => label), h("span", { class: "muted" }, "(none ticked = every region)"))),
+    h("div", { class: "card" }, h("h2", {}, "Add a watch"),
+      h("p", { class: "muted" }, "Paste a UniFi, Amazon, Best Buy, B&H, or Newegg link, or type a SKU or name. Pings go to your home Discord server."),
+      addForm),
     h("div", { class: "card" }, h("div", { class: "row spread" }, h("h2", {}, `My watches (${mine.length})`), mine.length ? bulkBar : null), myTable),
+    h("div", { class: "card" }, h("h2", {}, "Every important alert"),
+      h("label", { class: "check" }, subscribe, "Ping me for every back in stock, Early Access, new listing, and deal"),
+      h("div", { class: "row spaced-sm" }, h("span", { class: "muted" }, "Only for"), subRegions.map(([, label]) => label), h("span", { class: "muted small" }, "None ticked means every region."))),
     rulesCard,
-    h("div", { class: "card" }, h("h2", {}, `Members' watches (${members.length})`), memberTable));
-  shell(content, "Watchlist", "What you're tracking, how you're alerted, and standing rules");
+    members.length ? h("div", { class: "card" }, h("h2", {}, `Members' watches (${members.length})`), memberTable) : null);
+  shell(content, "Watchlist");
 }
 
 async function rulesSection(data, keys) {
@@ -967,8 +1009,9 @@ async function candidatePage(id) {
   c.title, [c.brand, c.category].filter(Boolean).join(" · "));
 }
 
-async function serversPage() {
-  const data = await api("/api/servers");
+async function systemPage() {
+  const [overview, servers, audit] = await Promise.all([api("/api/overview"), api("/api/servers"), api("/api/audit?limit=100")]);
+  features.discovery = overview.sources.discovery;
   const decide = (g, status) => async () => {
     const verb = status === "approved" ? "Approve" : "Block";
     if (!confirm(`${verb} ${g.name || g.guild_id}?${status === "blocked" ? " The bot will leave it." : ""}`)) return;
@@ -979,27 +1022,46 @@ async function serversPage() {
     } catch (error) { handleError(error); }
   };
   const statusKind = { approved: "good", pending: "warn", blocked: "bad" };
-  shell(h("div", { class: "card" }, table([
-    { label: "Server", cell: (g) => h("div", {}, g.name || "Unknown", h("div", { class: "muted mono" }, g.guild_id)) },
-    { label: "Status", cell: (g) => h("span", { class: `pill ${statusKind[g.status] || "neutral"}` }, g.status) },
-    { label: "Alerts", cell: (g) => (g.alert_channel ? "channel set" : h("span", { class: "muted" }, "no channel")) },
-    { label: "Valuations", cell: (g) => (g.show_valuations ? "shown" : "hidden") },
-    { label: "Decided", cell: (g) => when(g.decided_at) },
-    { label: "", cell: (g) => h("div", { class: "row" },
-      g.status !== "approved" ? h("button", { onclick: decide(g, "approved") }, "Approve") : null,
-      g.status !== "blocked" ? h("button", { class: "danger", onclick: decide(g, "blocked") }, "Block") : null) },
-  ], data.items, "The bot hasn't joined any servers.")), "Servers", "Approve or block Discord servers. Changes are audited.");
-}
-
-async function auditPage() {
-  const data = await api("/api/audit?limit=200");
-  shell(h("div", { class: "card" }, table([
-    { label: "When", cell: (a) => when(a.at) },
-    { label: "Who", cell: (a) => a.actor },
-    { label: "Action", cell: (a) => h("span", { class: "mono" }, a.action) },
-    { label: "Target", cell: (a) => a.target || "—" },
-    { label: "Details", cell: (a) => (a.details ? h("span", { class: "mono muted" }, typeof a.details === "string" ? a.details : JSON.stringify(a.details)) : "—") },
-  ], data.items, "No admin actions recorded yet.")), "Audit log", "Append-only: entries can't be edited or deleted.");
+  const src = overview.sources;
+  const content = h("div", { class: "grid" },
+    h("section", { class: "card" }, h("h2", {}, "Discord servers"), table([
+      { label: "Server", cell: (g) => h("div", {}, g.name || "Unknown", h("div", { class: "muted mono" }, g.guild_id)) },
+      { label: "Status", cell: (g) => h("span", { class: `pill ${statusKind[g.status] || "neutral"}` }, g.status) },
+      { label: "Alerts", cell: (g) => (g.alert_channel ? "channel set" : h("span", { class: "muted" }, "no channel")) },
+      { label: "Valuations", cell: (g) => (g.show_valuations ? "shown" : "hidden") },
+      { label: "Decided", cell: (g) => when(g.decided_at) },
+      { label: "", cell: (g) => h("div", { class: "row" },
+        g.status !== "approved" ? h("button", { onclick: decide(g, "approved") }, "Approve") : null,
+        g.status !== "blocked" ? h("button", { class: "danger", onclick: decide(g, "blocked") }, "Block") : null) },
+    ], servers.items, "The bot hasn't joined any servers.")),
+    h("div", { class: "grid cols-2" },
+      h("section", { class: "card" }, h("h2", {}, "Connections"),
+        h("dl", { class: "kv" },
+          h("dt", {}, "Discord bot"), h("dd", {}, onOff(src.discord)),
+          h("dt", {}, "Phone push (ntfy)"), h("dd", {}, onOff(src.ntfy)),
+          h("dt", {}, "SMS"), h("dd", {}, onOff(src.sms)),
+          h("dt", {}, "eBay API"), h("dd", {}, onOff(src.ebay)),
+          h("dt", {}, "Best Buy API"), h("dd", {}, onOff(src.bestbuy_api)),
+          h("dt", {}, "Discovery"), h("dd", {}, onOff(src.discovery)),
+          h("dt", {}, "UniFi regions"), h("dd", {}, src.unifi_regions.join(", ").toUpperCase()),
+          h("dt", {}, "Tailscale allowlist"), h("dd", {}, onOff(src.tailscale_logins))),
+        h("p", { class: "muted small" }, `Keys stay on the server; this only shows whether each is set. v${overview.version}, up ${duration(overview.uptime_seconds)}, ${overview.events_24h} events in 24h${overview.pending_events ? `, ${overview.pending_events} waiting to send` : ""}.`)),
+      h("section", { class: "card" }, h("h2", {}, "Jobs"),
+        table([
+          { label: "Job", cell: (j) => h("span", { class: "mono" }, j.name) },
+          { label: "Runs", num: true, cell: (j) => j.runs },
+          { label: "Failures", num: true, cell: (j) => (j.failures ? h("span", { class: "neg" }, j.failures) : 0) },
+          { label: "Next", num: true, cell: (j) => (j.running ? "running" : `in ${duration(j.next_in_seconds)}`) },
+        ], overview.jobs, "The panel isn't attached to a running scheduler."))),
+    h("section", { class: "card" }, h("h2", {}, "Audit log"), table([
+      { label: "When", cell: (a) => when(a.at) },
+      { label: "Who", cell: (a) => a.actor },
+      { label: "Action", cell: (a) => h("span", { class: "mono" }, a.action) },
+      { label: "Target", cell: (a) => a.target || "—" },
+      { label: "Details", cell: (a) => (a.details ? h("span", { class: "mono muted" }, typeof a.details === "string" ? a.details : JSON.stringify(a.details)) : "—") },
+    ], audit.items, "No admin actions recorded yet."),
+      h("p", { class: "muted small" }, "Append-only: entries can't be edited or deleted.")));
+  shell(content, "System");
 }
 
 // ── router ───────────────────────────────────────────────────────────────
@@ -1011,15 +1073,14 @@ async function route() {
   const params = new URLSearchParams(query);
   const parts = path.split("/").filter(Boolean);
   try {
-    if (parts[0] === "opportunities") await opportunitiesPage(params);
+    if (parts[0] === "flips" || parts[0] === "opportunities") await opportunitiesPage(params);
     else if (parts[0] === "product" && parts[1]) await productPage(decodeURIComponent(parts[1]));
     else if (parts[0] === "radar") { await radarPage(params); every(30000, () => radarPage(params).catch(handleError)); }
     else if (parts[0] === "watchlist") await watchlistPage();
     else if (parts[0] === "discovery" && parts[1]) await candidatePage(decodeURIComponent(parts[1]));
     else if (parts[0] === "discovery") await discoveryPage(params);
-    else if (parts[0] === "servers") await serversPage();
-    else if (parts[0] === "audit") await auditPage();
-    else { await overviewPage(); every(30000, () => overviewPage().catch(handleError)); }
+    else if (["system", "servers", "audit"].includes(parts[0])) await systemPage();
+    else { await homePage(); every(30000, () => homePage().catch(handleError)); }
     every(60000, checkDeals);
     window.scrollTo(0, 0);
   } catch (error) {
@@ -1036,6 +1097,7 @@ async function start() {
     return;
   }
   await checkDeals();
+  try { features.discovery = (await api("/api/overview")).sources.discovery; } catch { /* the page will say */ }
   route();
 }
 

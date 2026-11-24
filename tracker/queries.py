@@ -171,14 +171,21 @@ async def user_watches(session: AsyncSession, user_id: str) -> list[ListingRow]:
     return [ListingRow(*row) for row in (await session.execute(stmt)).all()]
 
 
+async def subscription_for(
+    session: AsyncSession, user_id: str, guild_id: str | None = None
+) -> Watch | None:
+    """A member's 'ping me for every important alert' watch in one server, if any."""
+    condition = Watch.guild_id.is_(None) if guild_id is None else Watch.guild_id == guild_id
+    return await session.scalar(
+        select(Watch).where(Watch.discord_user_id == user_id, Watch.listing_id.is_(None), condition)
+    )
+
+
 async def set_subscribed(
     session: AsyncSession, user_id: str, subscribed: bool, guild_id: str | None = None
 ) -> bool:
     """'Ping me for every important alert' in one server. Returns True if anything changed."""
-    condition = Watch.guild_id.is_(None) if guild_id is None else Watch.guild_id == guild_id
-    existing = await session.scalar(
-        select(Watch).where(Watch.discord_user_id == user_id, Watch.listing_id.is_(None), condition)
-    )
+    existing = await subscription_for(session, user_id, guild_id)
     if subscribed and existing is None:
         session.add(Watch(discord_user_id=user_id, listing_id=None, guild_id=guild_id))
         return True
@@ -192,10 +199,7 @@ async def set_subscription_regions(
     session: AsyncSession, user_id: str, regions: str | None, guild_id: str | None = None
 ) -> bool:
     """Limit 'ping me for everything' to some regions (None = all). False if not subscribed."""
-    condition = Watch.guild_id.is_(None) if guild_id is None else Watch.guild_id == guild_id
-    existing = await session.scalar(
-        select(Watch).where(Watch.discord_user_id == user_id, Watch.listing_id.is_(None), condition)
-    )
+    existing = await subscription_for(session, user_id, guild_id)
     if existing is None:
         return False
     existing.regions = regions

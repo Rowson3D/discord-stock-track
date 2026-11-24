@@ -77,15 +77,15 @@ def test_role_resolution():
         ("watch", Role.MEMBER, approved(), True),
         ("watch", Role.OWNER, None, False),  # DMs / unknown servers: nothing works
         ("watch", Role.MEMBER, GuildConfig(guild_id="9", status=GuildStatus.PENDING), False),
-        ("check", Role.MEMBER, approved(), False),
-        ("check", Role.SERVER_ADMIN, approved(), True),
+        ("status", Role.MEMBER, approved(), False),
+        ("status", Role.SERVER_ADMIN, approved(), True),
         ("server configure", Role.SERVER_ADMIN, approved(), True),
-        ("server approve", Role.SERVER_ADMIN, approved(), False),
-        ("server approve", Role.OWNER, approved(), True),
+        ("server access", Role.SERVER_ADMIN, approved(), False),
+        ("server access", Role.OWNER, approved(), True),
         ("comp", Role.SERVER_ADMIN, approved(), False),
-        ("opportunities", Role.MEMBER, approved(show_valuations=False), False),
-        ("opportunities", Role.MEMBER, approved(show_valuations=True), True),
-        ("opportunities", Role.OWNER, approved(show_valuations=False), True),
+        ("flips", Role.MEMBER, approved(show_valuations=False), False),
+        ("flips", Role.MEMBER, approved(show_valuations=True), True),
+        ("flips", Role.OWNER, approved(show_valuations=False), True),
         ("some-new-command", Role.SERVER_ADMIN, approved(), False),  # default: owner only
     ],
 )
@@ -353,11 +353,11 @@ async def test_interaction_check_gates_commands(sessions):
     ctx = SimpleNamespace(sessions=sessions, settings=SimpleNamespace(discord=discord()))
     cog = TrackerCommands(SimpleNamespace(ctx=ctx, owner_ids={"1"}))  # type: ignore[arg-type]
 
-    member = _interaction("check", int(HOME), 50)
+    member = _interaction("status", int(HOME), 50)
     assert not await cog.interaction_check(member)
     assert "server admins" in member.response.messages[0]
 
-    admin = _interaction("check", int(HOME), 51, manage=True)
+    admin = _interaction("status", int(HOME), 51, manage=True)
     assert await cog.interaction_check(admin)
     assert admin.extras["role"] is Role.SERVER_ADMIN
 

@@ -196,7 +196,7 @@ async def test_radar_acknowledges_before_reading(catalog):
     assert interaction.response.deferred == {"ephemeral": True, "thinking": True}
     [reply] = interaction.followup.sent
     assert reply["ephemeral"] is True
-    assert reply["content"] == "No radar events yet." or reply["embed"].title == "📡 Radar"
+    assert reply["content"] == "Nothing on the radar yet." or reply["embed"].title == "Radar"
 
 
 # ── app wiring ────────────────────────────────────────────────────────────
@@ -283,10 +283,15 @@ async def test_slash_commands_register_and_serialize():
     await bot.add_cog(TrackerCommands(bot))
     payloads = {cmd.name: cmd.to_dict(bot.tree) for cmd in bot.tree.get_commands()}
     assert set(payloads) == {
-        "watch", "unwatch", "watches", "subscribe", "unsubscribe", "stock", "radar",
-        "restocks", "status", "check", "priority", "testalert", "cleanup",
-        "opportunities", "value", "comp", "forgetme", "about", "server", "scan",
+        "watch", "watches", "stock", "flips", "radar", "about",  # members
+        "status", "server", "comp", "scan",  # hidden behind Manage Server
     }  # fmt: skip
+    for name in ("status", "server", "comp", "scan"):
+        assert payloads[name]["default_member_permissions"] is not None
+    for name in ("watch", "watches", "stock", "flips", "radar", "about"):
+        assert payloads[name]["default_member_permissions"] is None
+    server = {o["name"] for o in payloads["server"]["options"]}
+    assert server == {"settings", "configure", "audit", "access"}
     for payload in payloads.values():
         assert 1 <= len(payload["description"]) <= 100
         for option in payload.get("options", []):

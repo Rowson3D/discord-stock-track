@@ -12,14 +12,16 @@ import discord
 
 from tracker.audit import audit
 from tracker.bot.embeds import source_name, status_text
+from tracker.db.models import Watch
 from tracker.domain import StockStatus, format_cents
 from tracker.guilds import config_for
-from tracker.queries import toggle_watch
+from tracker.queries import set_subscribed, set_subscription_regions, toggle_watch
 from tracker.watching import (
     ALERT_KEYS,
     WatchRow,
     mute_watches,
     parse_kinds,
+    parse_regions,
     remove_watch_ids,
     user_watch_rows,
 )
@@ -121,15 +123,30 @@ def watch_line(row: WatchRow, now: datetime) -> str:
     return " · ".join(parts)
 
 
-def watches_embed(rows: list[WatchRow], now: datetime) -> discord.Embed:
-    lines = [watch_line(r, now) for r in rows]
-    text = "\n".join(lines[:_WATCHES_SHOWN])
+def everything_text(subscription: Watch | None) -> str:
+    """How 'ping me for everything' is set, in a few words."""
+    if subscription is None:
+        return "off"
+    regions = parse_regions(subscription.regions)
+    if regions is None:
+        return "every region"
+    return ", ".join(r.upper() for r in sorted(regions)) + " only"
+
+
+def watches_embed(
+    rows: list[WatchRow], now: datetime, subscription: Watch | None = None
+) -> discord.Embed:
+    lines = [watch_line(r, now) for r in rows[:_WATCHES_SHOWN]]
     if len(rows) > _WATCHES_SHOWN:
-        text += f"\n…and {len(rows) - _WATCHES_SHOWN} more (manage all of them in the owner panel)"
+        lines.append(f"…and {len(rows) - _WATCHES_SHOWN} more (all of them are in the panel)")
+    if not rows:
+        lines.append("Nothing yet. Add one with `/watch` and a SKU, name, or store link.")
+    lines += ["", f"**Ping me for every important alert:** {everything_text(subscription)}"]
     embed = discord.Embed(
-        title=f"🔔 Your watches ({len(rows)})", description=text[:4000], color=0x5865F2
+        title=f"Your watches ({len(rows)})", description="\n".join(lines)[:4000], color=0x5865F2
     )
-    embed.set_footer(text="Pick watches below, then Remove, Mute 24h, Unmute, or Test.")
+    if rows:
+        embed.set_footer(text="Pick watches, then Remove, Mute 24h, Unmute, or Test.")
     return embed
 
 
@@ -171,13 +188,83 @@ def watch_test_embed(test: WatchTest, link: str | None, error: str | None) -> di
 
 
 class WatchManager(discord.ui.View):
-    """Select some of your watches, then remove, mute, or unmute them."""
+    """Select some of your watches, then remove, mute, unmute or test them; and switch
+    'ping me for every important alert' on or off for a region."""
 
-    def __init__(self, bot: TrackerBot, user_id: str, rows: list[WatchRow]) -> None:
+    def __init__(
+        self,
+        bot: TrackerBot,
+        user_id: str,
+        rows: list[WatchRow],
+        *,
+        guild_id: str | None = None,
+        regions: list[str] | None = None,
+        subscription: Watch | None = None,
+    ) -> None:
         super().__init__(timeout=600)
         self.bot = bot
         self.user_id = user_id
+        self.guild_id = guild_id
+        self.regions = list(regions or [])
         self.selected: list[int] = []
+        if self.regions:
+            self.add_item(self._everything_picker(subscription))
+        if rows:
+            self._add_watch_controls(rows)
+
+    def _everything_picker(self, subscription: Watch | None) -> discord.ui.Select[Any]:
+        current = "off"
+        if subscription is not None:
+            chosen = parse_regions(subscription.regions)
+            current = "all" if chosen is None else ",".join(sorted(chosen))
+        options = [("off", "Off"), ("all", "Every region")]
+        options += [(r, f"{r.upper()} stores only") for r in self.regions]
+        picker: discord.ui.Select[Any] = discord.ui.Select(
+            placeholder=f"Ping me for every important alert: {everything_text(subscription)}",
+            options=[
+                discord.SelectOption(
+                    label=f"Every important alert: {label}", value=value, default=value == current
+                )
+                for value, label in options
+            ],
+            row=0,
+        )
+
+        async def chosen(interaction: discord.Interaction[Any]) -> None:
+            await self.set_everything(interaction, picker.values[0])
+
+        picker.callback = chosen  # type: ignore[method-assign]
+        return picker
+
+    async def set_everything(self, interaction: discord.Interaction[Any], choice: str) -> None:
+        async with self.bot.ctx.sessions() as session, session.begin():
+            await set_subscribed(session, self.user_id, choice != "off", self.guild_id)
+            if choice != "off":
+                await session.flush()
+                regions = None if choice == "all" else choice
+                await set_subscription_regions(session, self.user_id, regions, self.guild_id)
+        await self.refresh(interaction, None)
+
+    async def refresh(self, interaction: discord.Interaction[Any], content: str | None) -> None:
+        from tracker.queries import subscription_for
+
+        async with self.bot.ctx.sessions() as session:
+            rows = await user_watch_rows(session, self.user_id)
+            subscription = await subscription_for(session, self.user_id, self.guild_id)
+        await interaction.response.edit_message(
+            content=content,
+            embed=watches_embed(rows, datetime.now(UTC), subscription),
+            view=WatchManager(
+                self.bot,
+                self.user_id,
+                rows,
+                guild_id=self.guild_id,
+                regions=self.regions,
+                subscription=subscription,
+            ),
+        )
+
+    def _add_watch_controls(self, rows: list[WatchRow]) -> None:
         shown = rows[:_WATCHES_SHOWN]
         self.picker: discord.ui.Select[Any] = discord.ui.Select(
             placeholder="Choose watches…",
@@ -193,6 +280,7 @@ class WatchManager(discord.ui.View):
             ],
         )
         self.picker.callback = self._picked  # type: ignore[method-assign]
+        self.picker.row = 1
         self.add_item(self.picker)
         for label, style, action in (
             ("Remove", discord.ButtonStyle.danger, "remove"),
@@ -200,7 +288,7 @@ class WatchManager(discord.ui.View):
             ("Unmute", discord.ButtonStyle.secondary, "unmute"),
             ("Test", discord.ButtonStyle.primary, "test"),
         ):
-            button: discord.ui.Button[Any] = discord.ui.Button(label=label, style=style)
+            button: discord.ui.Button[Any] = discord.ui.Button(label=label, style=style, row=2)
             button.callback = self._handler(action)  # type: ignore[method-assign]
             self.add_item(button)
 
@@ -238,20 +326,8 @@ class WatchManager(discord.ui.View):
             else:
                 until = now + timedelta(hours=MUTE_HOURS) if action == "mute" else None
                 count = await mute_watches(session, self.user_id, self.selected, until)
-            rows = await user_watch_rows(session, self.user_id)
         done = {"remove": "Removed", "mute": f"Muted for {MUTE_HOURS}h", "unmute": "Unmuted"}
-        if not rows:
-            await interaction.response.edit_message(
-                content=f"{done[action]} {count}. You aren't watching anything now.",
-                embed=None,
-                view=None,
-            )
-            return
-        await interaction.response.edit_message(
-            content=f"✅ {done[action]} {count} watch(es).",
-            embed=watches_embed(rows, now),
-            view=WatchManager(self.bot, self.user_id, rows),
-        )
+        await self.refresh(interaction, f"{done[action]} {count} watch(es).")
 
     async def test(self, interaction: discord.Interaction[Any]) -> None:
         """Send a sample alert for the first selected watch and explain what it covers."""

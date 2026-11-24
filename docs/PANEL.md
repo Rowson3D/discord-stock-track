@@ -25,14 +25,15 @@ Check the configuration any time with `uv run tracker panel status` (it never pr
 
 | Page | What it shows |
 |---|---|
-| **Overview** | Credible flips, active deals, events, uptime; stock counts per store region; valuation mix; scheduler jobs (runs, failures, next run); which sources are configured |
-| **Opportunities** | Four views: **credible flips** (real evidence only), **sold-out market** (store sold out; eBay asking prices are the live market; restock candidates), **hyped in stock** (in stock but listed far above retail; asking prices only), and everything valued |
-| **Watchlist** | Everything you track in one place. Add by SKU, name, or any supported store link; pick alert types per item (back in stock, Early Access, price drop, deal, new, restock date, sold out); set a target price; mute; change check priority; bulk mute or remove. **Test** shows, for every alert type, whether the watch pings you, in which channel, and why not (muted, target price, type turned off, server defaults, hidden valuations), then sends a sample alert to Discord that pings only you. **Rules** ping you for anything matching text, category, region, price, or credible profit, including products that don't exist yet, with a live preview of what they cover. Also: "ping me for every important alert", and members' watches (remove only). |
-| **Discovery** | Check any item against eBay, and the inbox of hot candidates (promising, new, checked, tracked, ignored, dropped) with store price, eBay read, honest estimate, and Track / Ignore / Recheck. See [DISCOVERY.md](DISCOVERY.md). |
-| **Product** | Verdict, profit breakdown, every region's status and price, restock count, sell-out speed, out-of-stock duration, daily eBay price and seller charts, recent events |
-| **Radar** | Every event, newest first, filterable (deals, restocks, new, Early Access, sold out, price) |
-| **Servers** | Approve or block Discord servers (blocking makes the bot leave) |
-| **Audit log** | Every admin action from Discord or the panel, including panel logins and failed attempts |
+| **Home** | What to buy right now (in stock, credible profit) and your watches, in-stock first; the latest events and each store's stock count on the side |
+| **Flips** | Four views: **Flips** (real evidence only), **Sold out** (store sold out; eBay asking prices are the live market; restock candidates), **Hyped** (in stock but listed far above retail; asking prices only), and **All valued** |
+| **Watchlist** | Everything you track in one place. Add by SKU, name, or any supported store link. Each watch has **Edit** (alert types, target price, check priority, mute, remove) and **Test** (for every alert type, whether the watch pings you, in which channel, and why not, then a sample alert to Discord that pings only you). Tick several to mute, unmute, or remove them together. Also: **Every important alert** (on or off, by region), **Rules** (ping you for anything matching text, category, region, price, or credible profit, including products that don't exist yet, with a live preview), and members' watches when there are any. |
+| **Radar** | Every event, newest first, by kind and region (the region you pick is remembered) |
+| **Discovery** | Shown when discovery is on. Check any item against eBay, and the inbox of hot candidates with store price, eBay read, honest estimate, and Track / Ignore / Recheck. See [DISCOVERY.md](DISCOVERY.md). |
+| **System** | Discord servers (approve or block; blocking makes the bot leave), which connections are set up, scheduler jobs, and the audit log of every admin action from Discord or the panel, including logins |
+| **Product** | Open any SKU from search or a table: verdict, profit breakdown, every region's status and price, restock count, sell-out speed, out-of-stock duration, daily eBay price and seller charts, recent events |
+
+Old links (`#/opportunities`, `#/servers`, `#/audit`) still work.
 
 New deal alerts pop up as toasts while the panel is open.
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 import time
@@ -17,9 +16,9 @@ from tracker.alerts import AlertPlan
 from tracker.audit import audit, describe, recent_audit
 from tracker.bot.cleanup import cleanup_messages
 from tracker.bot.embeds import KIND_STYLE, alert_content, alert_embed, source_name, status_text
-from tracker.bot.views import WatchManager, alert_view, watches_embed
+from tracker.bot.views import WatchButton, WatchManager, alert_view, watches_embed
 from tracker.db.models import Listing, MarketComp, Product, Valuation, Variant
-from tracker.domain import EventKind, Priority, SourceKey, StockStatus, format_cents
+from tracker.domain import EventKind, SourceKey, StockStatus, format_cents
 from tracker.guilds import (
     ADMIN_FIELDS,
     GuildConfig,
@@ -41,15 +40,11 @@ from tracker.queries import (
     forget_user,
     opportunities,
     recent_observations,
-    remove_watches,
     resolve_variant,
     search_variants,
-    set_priority,
-    set_subscribed,
-    set_subscription_regions,
+    subscription_for,
     tracker_stats,
     upcoming_restocks,
-    user_watches,
     variant_comps,
     variant_listings,
 )
@@ -57,8 +52,6 @@ from tracker.services.unifi import slug_from_url
 from tracker.settings import MarketSettings
 from tracker.sources.web import parse_money
 from tracker.watching import (
-    format_regions,
-    parse_regions,
     resolve_listings,
     user_watch_rows,
 )
@@ -71,6 +64,7 @@ logger = logging.getLogger(__name__)
 
 _UNIFI_URL_RE = re.compile(r"/(?P<region>[a-z]{2,5})/[a-z]{2}/products/(?P<slug>[^/?#]+)")
 _MAX_LINES = 25
+UPCOMING = "upcoming"  # /radar choice: announced restock dates
 
 
 def _ts(value: datetime | None, style: str = "R") -> str:
@@ -409,16 +403,6 @@ class TrackerCommands(commands.Cog):
             matches = await search_variants(session, current, limit=25)
         return [app_commands.Choice(name=m.label, value=m.sku) for m in matches]
 
-    async def watched_autocomplete(
-        self, interaction: discord.Interaction[Any], current: str
-    ) -> list[app_commands.Choice[str]]:
-        async with self.ctx.sessions() as session:
-            rows = await user_watches(session, str(interaction.user.id))
-        skus = dict.fromkeys(
-            r.variant.sku for r in rows if current.lower() in r.variant.sku.lower()
-        )
-        return [app_commands.Choice(name=sku, value=sku) for sku in list(skus)[:25]]
-
     async def region_autocomplete(
         self, interaction: discord.Interaction[Any], current: str
     ) -> list[app_commands.Choice[str]]:
@@ -428,10 +412,10 @@ class TrackerCommands(commands.Cog):
     # ── watching ──────────────────────────────────────────────────────────
 
     @app_commands.command(
-        description="Get pinged when a product is back in stock, goes EA, or drops in price"
+        description="Get pinged when a product restocks, goes Early Access, or drops in price"
     )
     @app_commands.describe(
-        product="SKU, product name, or a store URL (UniFi, Amazon, Best Buy, B&H, Newegg)",
+        product="SKU, product name, or a store link (UniFi, Amazon, Best Buy, B&H, Newegg)",
         region="Only this UniFi store region (default: every tracked region)",
         max_price="Only ping when the price is at or below this",
     )
@@ -457,117 +441,64 @@ class TrackerCommands(commands.Cog):
                 cap,
                 str(interaction.guild_id),
             )
-        verb = "Watching" if created else "Updated watch for"
+        verb = "Watching" if created else "Updated your watch on"
         cap_text = f" at or below {format_cents(cap)}" if cap else ""
         listing_lines = _paginate([_row_line(r) for r in rows])
         await interaction.followup.send(
-            f"🔔 {verb} {len(rows)} listing(s){cap_text}:\n{listing_lines}", ephemeral=True
-        )
-
-    @app_commands.command(description="Stop watching a product")
-    @app_commands.describe(product="A product you're watching")
-    @app_commands.autocomplete(product=watched_autocomplete)
-    async def unwatch(self, interaction: discord.Interaction[Any], product: str) -> None:
-        user_id = str(interaction.user.id)
-        async with self.ctx.sessions() as session, session.begin():
-            rows = [
-                r
-                for r in await user_watches(session, user_id)
-                if r.variant.sku.lower() == product.strip().lower() or r.listing.url == product
-            ]
-            removed = await remove_watches(session, user_id, [r.listing.id for r in rows])
-        message = (
-            f"🔕 Removed {removed} watch(es) for `{product}`."
-            if removed
-            else (f"You aren't watching `{product}`. See `/watches`.")
-        )
-        await interaction.response.send_message(message, ephemeral=True)
-
-    @app_commands.command(description="See and manage your watches (remove, mute, unmute)")
-    async def watches(self, interaction: discord.Interaction[Any]) -> None:
-        user_id = str(interaction.user.id)
-        async with self.ctx.sessions() as session:
-            rows = await user_watch_rows(session, user_id)
-        if not rows:
-            await interaction.response.send_message(
-                "You aren't watching anything yet. Try `/watch`.", ephemeral=True
-            )
-            return
-        await interaction.response.send_message(
-            embed=watches_embed(rows, datetime.now(UTC)),
-            view=WatchManager(self.bot, user_id, rows),
+            f"🔔 {verb} {len(rows)} listing(s){cap_text}:\n{listing_lines}\n"
+            "-# Change or remove it with /watches.",
             ephemeral=True,
         )
 
-    async def subscription_region_autocomplete(
-        self, interaction: discord.Interaction[Any], current: str
-    ) -> list[app_commands.Choice[str]]:
-        options = [*self.ctx.settings.unifi.regions, "all"]
-        last = current.split(",")[-1].strip().lower()
-        prefix = current[: len(current) - len(current.split(",")[-1])]
-        return [
-            app_commands.Choice(name=f"{prefix}{r}".upper(), value=f"{prefix}{r}")
-            for r in options
-            if r.startswith(last)
-        ][:25]
-
     @app_commands.command(
-        description="Get pinged for every important alert (back in stock, EA, new)"
+        description="Your watches and 'ping me for everything': remove, mute, test"
     )
-    @app_commands.describe(
-        regions="Only ping for these stores, e.g. us or us,ca ('all' for every region)"
-    )
-    @app_commands.autocomplete(regions=subscription_region_autocomplete)
-    async def subscribe(
-        self, interaction: discord.Interaction[Any], regions: str | None = None
-    ) -> None:
-        chosen: str | None = None
-        if regions is not None and regions.strip().lower() not in ("all", "any", "*"):
-            try:
-                chosen = format_regions(regions.split(","))
-            except ValueError as error:
-                await interaction.response.send_message(f"⚠️ {error}", ephemeral=True)
-                return
-        user, guild = str(interaction.user.id), str(interaction.guild_id)
-        async with self.ctx.sessions() as session, session.begin():
-            changed = await set_subscribed(session, user, True, guild)
-            if regions is not None:
-                await session.flush()
-                await set_subscription_regions(session, user, chosen, guild)
-        where = (
-            "in " + ", ".join(r.upper() for r in sorted(parse_regions(chosen) or ()))
-            if chosen
-            else "in every region"
-        )
-        if changed:
-            text = f"🔔 Subscribed to all important alerts {where}."
-        elif regions is not None:
-            text = f"🔔 You'll now be pinged for important alerts {where}."
-        else:
-            text = "You're already subscribed. Add `regions:` to limit it to your country."
-        await interaction.response.send_message(text, ephemeral=True)
-
-    @app_commands.command(description="Stop being pinged for every important alert")
-    async def unsubscribe(self, interaction: discord.Interaction[Any]) -> None:
-        async with self.ctx.sessions() as session, session.begin():
-            changed = await set_subscribed(
-                session, str(interaction.user.id), False, str(interaction.guild_id)
-            )
+    async def watches(self, interaction: discord.Interaction[Any]) -> None:
+        user_id = str(interaction.user.id)
+        guild_id = str(interaction.guild_id) if interaction.guild_id else None
+        async with self.ctx.sessions() as session:
+            rows = await user_watch_rows(session, user_id)
+            subscription = await subscription_for(session, user_id, guild_id)
         await interaction.response.send_message(
-            "🔕 Unsubscribed." if changed else "You weren't subscribed.", ephemeral=True
+            embed=watches_embed(rows, datetime.now(UTC), subscription),
+            view=WatchManager(
+                self.bot,
+                user_id,
+                rows,
+                guild_id=guild_id,
+                regions=list(self.ctx.settings.unifi.regions),
+                subscription=subscription,
+            ),
+            ephemeral=True,
         )
 
-    # ── information ───────────────────────────────────────────────────────
+    # ── looking things up ─────────────────────────────────────────────────
 
-    @app_commands.command(description="Stock, price, and recent history for a product")
-    @app_commands.describe(product="SKU, product name, or store URL")
+    @app_commands.command(description="Stock, price, history and profit for a product")
+    @app_commands.describe(product="SKU, product name, or store link")
     @app_commands.autocomplete(product=product_autocomplete)
     async def stock(self, interaction: discord.Interaction[Any], product: str) -> None:
-        await interaction.response.defer(thinking=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
         rows, error = await self._resolve(product, None)
         if error:
-            await interaction.followup.send(f"⚠️ {error}")
+            await interaction.followup.send(f"⚠️ {error}", ephemeral=True)
             return
+        embed = await self._stock_embed(rows)
+        role = self._role(interaction)
+        guild = interaction.extras.get("guild_config")
+        await interaction.followup.send(
+            embed=embed,
+            view=StockActions(
+                self,
+                rows,
+                profit=role >= Role.OWNER or bool(guild and guild.show_valuations),
+                check=role >= Role.SERVER_ADMIN,
+                refresh=role >= Role.OWNER and self.ctx.market.collecting,
+            ),
+            ephemeral=True,
+        )
+
+    async def _stock_embed(self, rows: list[ListingRow]) -> discord.Embed:
         first = rows[0]
         embed = discord.Embed(title=first.product.name[:256], url=first.listing.url, color=0x5865F2)
         now = datetime.now(UTC)
@@ -575,6 +506,7 @@ class TrackerCommands(commands.Cog):
             histories = {
                 r.listing.id: await stock_history(session, r.listing.id) for r in rows[:20]
             }
+            history = await recent_observations(session, first.listing.id, limit=6)
         for row in rows[:20]:
             listing = row.listing
             lines = [
@@ -596,8 +528,6 @@ class TrackerCommands(commands.Cog):
                 value="\n".join(lines),
                 inline=False,
             )
-        async with self.ctx.sessions() as session:
-            history = await recent_observations(session, first.listing.id, limit=6)
         if history:
             embed.add_field(
                 name=f"Recent changes ({first.variant.sku} {first.listing.region.upper()})",
@@ -611,77 +541,192 @@ class TrackerCommands(commands.Cog):
         embed.set_footer(
             text=f"{first.product.category or 'uncategorized'} · {first.product.brand}"
         )
-        await interaction.followup.send(
-            embed=embed, view=alert_view(first.listing.id, first.listing.url)
+        return embed
+
+    async def _profit_embed(self, variant_id: int, *, refresh: bool = False) -> discord.Embed:
+        live = None
+        if refresh and self.ctx.market.collecting:
+            live = (await self.ctx.market.collect(variant_id)).items
+        async with self.ctx.sessions() as session:
+            variant = await session.get(Variant, variant_id)
+            valuation = await session.get(Valuation, variant_id)
+            comps = await variant_comps(session, variant_id, limit=8)
+            product_row = await session.get(Product, variant.product_id) if variant else None
+            trend = await ebay_trend(session, variant_id)
+        assert variant is not None
+        return value_embed(
+            variant, product_row, valuation, comps, self.ctx.settings.market, live=live, trend=trend
         )
 
-    @app_commands.command(description="Recent radar events")
-    @app_commands.describe(kind="Only this kind of event", limit="How many (max 25)")
+    async def _check_now(self, rows: list[ListingRow]) -> list[ListingRow]:
+        """Poll these listings right away, deliver any alerts, and return them refreshed."""
+        pages = {
+            (r.listing.region, slug)
+            for r in rows
+            if r.listing.source == SourceKey.UNIFI and (slug := slug_from_url(r.listing.url))
+        }
+        for region, slug in pages:
+            await self.ctx.unifi.poll_product(region, slug)
+        for row in rows:
+            if row.listing.source != SourceKey.UNIFI and self.ctx.retail is not None:
+                await self.ctx.retail.poll(
+                    row.listing.id, row.listing.url, SourceKey(row.listing.source)
+                )
+        await self.ctx.dispatcher.dispatch()
+        ids = {r.listing.id for r in rows}
+        async with self.ctx.sessions() as session:
+            fresh = [
+                r
+                for r in await variant_listings(session, rows[0].variant.id)
+                if r.listing.id in ids
+            ]
+        return fresh or rows
+
+    @app_commands.command(description="Best flips right now, ranked by estimated profit")
+    @app_commands.describe(
+        min_profit="Minimum estimated net profit in dollars",
+        available="Only items you can buy right now",
+        category="Category, e.g. wifi, switching, cloud-gateways",
+        limit="How many (max 25)",
+    )
+    async def flips(
+        self,
+        interaction: discord.Interaction[Any],
+        min_profit: app_commands.Range[float, 0] = 0.0,
+        available: bool = False,
+        category: str | None = None,
+        limit: app_commands.Range[int, 1, 25] = 15,
+    ) -> None:
+        async with self.ctx.sessions() as session:
+            rows = await opportunities(
+                session,
+                limit=limit,
+                min_profit_cents=round(min_profit * 100),
+                available_only=available,
+                category=category,
+            )
+        if not rows:
+            hint = (
+                "Prices are still being collected from eBay; check back soon."
+                if self.ctx.market.collecting
+                else "eBay isn't set up yet (EBAY_CLIENT_ID / EBAY_CLIENT_SECRET)."
+            )
+            await interaction.response.send_message(f"No flips match yet. {hint}", ephemeral=True)
+            return
+        lines = [_opportunity_line(rank, row) for rank, row in enumerate(rows, start=1)]
+        embed = discord.Embed(title="Best flips", description=_paginate(lines), color=0xF1C40F)
+        settings = self.ctx.settings.market
+        embed.set_footer(
+            text=f"Net after {settings.fee_rate:.1%} + {format_cents(settings.fixed_fee_cents)} "
+            f"fees, {format_cents(settings.outbound_shipping_cents)} shipping, "
+            f"{settings.purchase_tax_rate:.1%} tax · /stock shows the breakdown"
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(description="What just changed: restocks, sell-outs, prices, dates")
+    @app_commands.describe(
+        kind="Only this kind (Upcoming restocks lists announced dates)",
+        region="Only this store region",
+        limit="How many (max 25)",
+    )
     @app_commands.choices(
         kind=[
             app_commands.Choice(name=label, value=k.value)
             for k, (_, label, _) in KIND_STYLE.items()
         ]
+        + [app_commands.Choice(name="Upcoming restocks", value=UPCOMING)]
     )
+    @app_commands.autocomplete(region=region_autocomplete)
     async def radar(
         self,
         interaction: discord.Interaction[Any],
         kind: str | None = None,
+        region: str | None = None,
         limit: app_commands.Range[int, 1, 25] = 15,
     ) -> None:
         # Acknowledge first: Discord drops replies after 3 s, and a busy tracker can be slower.
         await interaction.response.defer(ephemeral=True, thinking=True)
+        if kind == UPCOMING:
+            await interaction.followup.send(embed=await self._upcoming(region), ephemeral=True)
+            return
+        wanted = region.strip().lower() if region else None
         async with self.ctx.sessions() as session:
             events = await load_events(
-                session, pending_only=False, limit=limit, kinds=[kind] if kind else None
+                session,
+                pending_only=False,
+                limit=limit if wanted is None else 200,
+                kinds=[kind] if kind else None,
             )
+        if wanted:
+            events = [e for e in events if (e.region or "").lower() == wanted][:limit]
         if not events:
-            await interaction.followup.send("No radar events yet.", ephemeral=True)
+            await interaction.followup.send("Nothing on the radar yet.", ephemeral=True)
             return
         lines = []
         for event in events:
             emoji, label, _ = KIND_STYLE.get(event.kind, ("•", event.kind.value, 0))
             name = f"[{event.sku}]({event.url})" if event.url else (event.sku or "?")
-            region = f" {event.region.upper()}" if event.region else ""
+            where = f" {event.region.upper()}" if event.region else ""
             change = (
                 f" · {event.old_value or '—'} → {event.new_value or '—'}"
                 if event.kind in (EventKind.PRICE_CHANGE, EventKind.RESTOCK_ETA)
                 else ""
             )
-            lines.append(f"{_ts(event.occurred_at)} {emoji} {label} · {name}{region}{change}")
-        embed = discord.Embed(title="📡 Radar", description=_paginate(lines), color=0x5865F2)
+            lines.append(f"{_ts(event.occurred_at)} {emoji} {label} · {name}{where}{change}")
+        embed = discord.Embed(title="Radar", description=_paginate(lines), color=0x5865F2)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @app_commands.command(description="Sold-out items with an announced restock date")
-    @app_commands.describe(days="Look this many days ahead")
-    async def restocks(
-        self, interaction: discord.Interaction[Any], days: app_commands.Range[int, 1, 120] = 14
-    ) -> None:
+    async def _upcoming(self, region: str | None, days: int = 30) -> discord.Embed:
         async with self.ctx.sessions() as session:
             rows = await upcoming_restocks(session, datetime.now(UTC).date(), days)
-        if not rows:
-            await interaction.response.send_message(
-                f"No announced restocks in the next {days} days.", ephemeral=True
-            )
-            return
+        if region:
+            rows = [r for r in rows if r.listing.region == region.strip().lower()]
         lines = [
             f"`{r.listing.restock_eta}` **{r.variant.sku}** {r.listing.region.upper()} · "
             f"{format_cents(r.listing.price_cents, r.listing.currency)}"
             for r in rows
         ]
-        embed = discord.Embed(
-            title=f"📅 Restocks in the next {days} days ({len(rows)})",
-            description=_paginate(lines, 40),
+        return discord.Embed(
+            title=f"Announced restocks, next {days} days ({len(rows)})",
+            description=_paginate(lines, 40) or "None announced.",
             color=0x3BA55C,
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(description="Tracker health and catalog summary")
+    @app_commands.command(description="What this bot does, what it stores, and deleting your data")
+    async def about(self, interaction: discord.Interaction[Any]) -> None:
+        embed = discord.Embed(
+            title="About this tracker",
+            color=0x5865F2,
+            description=(
+                "A private stock and price tracker run by this server's owner.\n\n"
+                "**Start here:** `/watch` a product, then `/watches` to manage it. "
+                "`/stock` looks anything up, `/flips` ranks resale profit, `/radar` shows "
+                "what just changed.\n\n"
+                "**What it stores about you:** your Discord user ID, the products you watch "
+                "(with any max price), and your alert settings. It can't read messages, and "
+                "only the bot's operator sees it."
+            ),
+        )
+        await interaction.response.send_message(
+            embed=embed, view=ForgetMe(self, str(interaction.user.id)), ephemeral=True
+        )
+
+    async def _forget(self, interaction: discord.Interaction[Any]) -> dict[str, int]:
+        async with self.ctx.sessions() as session, session.begin():
+            counts = await forget_user(session, str(interaction.user.id))
+            # Logged without the member's identity: the point is to forget them.
+            await audit(session, "member.forget", guild_id=interaction.guild_id, details=counts)
+        return counts
+
+    # ── admin ─────────────────────────────────────────────────────────────
+
+    @app_commands.command(description="Tracker health: stores, jobs, events")
+    @app_commands.default_permissions(manage_guild=True)
     async def status(self, interaction: discord.Interaction[Any]) -> None:
         now = datetime.now(UTC)
         async with self.ctx.sessions() as session:
             stats = await tracker_stats(session, now)
-        embed = discord.Embed(title="📡 Tracker status", color=0x57F287)
+        embed = discord.Embed(title="Tracker status", color=0x57F287)
         uptime = now - self.ctx.started_at
         embed.add_field(name="Uptime", value=str(uptime).split(".")[0], inline=True)
         embed.add_field(
@@ -709,85 +754,8 @@ class TrackerCommands(commands.Cog):
         embed.add_field(name="Jobs", value="\n".join(jobs)[:1024] or "—", inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    # ── market ────────────────────────────────────────────────────────────
-
-    @app_commands.command(description="Best resale opportunities, ranked by estimated profit")
-    @app_commands.describe(
-        min_profit="Minimum estimated net profit in dollars",
-        available="Only items you can buy right now",
-        category="Category filter, e.g. wifi, switching, cloud-gateways",
-        limit="How many (max 25)",
-    )
-    async def opportunities(
-        self,
-        interaction: discord.Interaction[Any],
-        min_profit: app_commands.Range[float, 0] = 0.0,
-        available: bool = False,
-        category: str | None = None,
-        limit: app_commands.Range[int, 1, 25] = 15,
-    ) -> None:
-        async with self.ctx.sessions() as session:
-            rows = await opportunities(
-                session,
-                limit=limit,
-                min_profit_cents=round(min_profit * 100),
-                available_only=available,
-                category=category,
-            )
-        if not rows:
-            hint = (
-                "Comps are being collected from eBay; check back soon."
-                if self.ctx.market.collecting
-                else "No eBay credentials set: add comps with `/comp`, or set "
-                "EBAY_CLIENT_ID / EBAY_CLIENT_SECRET."
-            )
-            await interaction.response.send_message(
-                f"No opportunities match yet. {hint}", ephemeral=True
-            )
-            return
-        lines = [_opportunity_line(rank, row) for rank, row in enumerate(rows, start=1)]
-        embed = discord.Embed(
-            title="💰 Resale opportunities", description=_paginate(lines), color=0xF1C40F
-        )
-        settings = self.ctx.settings.market
-        embed.set_footer(
-            text=f"Net after {settings.fee_rate:.1%} + {format_cents(settings.fixed_fee_cents)} "
-            f"fees, {format_cents(settings.outbound_shipping_cents)} shipping, "
-            f"{settings.purchase_tax_rate:.1%} tax · /value for details"
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @app_commands.command(description="Resale valuation, profit breakdown, and comps for a product")
-    @app_commands.describe(product="SKU or product name", refresh="[admin] Fetch fresh eBay comps")
-    @app_commands.autocomplete(product=product_autocomplete)
-    async def value(
-        self, interaction: discord.Interaction[Any], product: str, refresh: bool = False
-    ) -> None:
-        if refresh and self._role(interaction) < Role.OWNER:
-            await interaction.response.send_message(
-                "⛔ Only the owner can refresh eBay data (it uses the API quota).", ephemeral=True
-            )
-            return
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        async with self.ctx.sessions() as session:
-            variant = await resolve_variant(session, product)
-        if variant is None:
-            await interaction.followup.send(f"⚠️ No product matches `{product}`.", ephemeral=True)
-            return
-        live = None
-        if refresh and self.ctx.market.collecting:
-            live = (await self.ctx.market.collect(variant.id)).items
-        async with self.ctx.sessions() as session:
-            valuation = await session.get(Valuation, variant.id)
-            comps = await variant_comps(session, variant.id, limit=8)
-            product_row = await session.get(Product, variant.product_id)
-            trend = await ebay_trend(session, variant.id)
-        embed = value_embed(
-            variant, product_row, valuation, comps, self.ctx.settings.market, live=live, trend=trend
-        )
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
-    @app_commands.command(description="[admin] Record a resale comp (your sale or one you saw)")
+    @app_commands.command(description="Record a resale price you saw or sold at")
+    @app_commands.default_permissions(manage_guild=True)
     @app_commands.describe(
         product="SKU or product name",
         price="Sale price per listing, in dollars",
@@ -839,11 +807,12 @@ class TrackerCommands(commands.Cog):
             else f"need {self.ctx.settings.market.min_comps} comps for a valuation"
         )
         await interaction.response.send_message(
-            f"✅ Recorded {format_cents(round(price * 100))} comp for `{variant.sku}`: {summary}.",
+            f"✅ Recorded {format_cents(round(price * 100))} for `{variant.sku}`: {summary}.",
             ephemeral=True,
         )
 
-    @app_commands.command(description="[owner] Live profit scan of the store against eBay")
+    @app_commands.command(description="Price the whole store against eBay now (uses eBay quota)")
+    @app_commands.default_permissions(manage_guild=True)
     @app_commands.describe(
         limit="How many items to price (one eBay call each)",
         min_retail="Only items costing at least this much at retail ($)",
@@ -858,7 +827,7 @@ class TrackerCommands(commands.Cog):
     ) -> None:
         if not self.ctx.market.collecting:
             await interaction.response.send_message(
-                "⚠️ eBay isn't configured (EBAY_CLIENT_ID / EBAY_CLIENT_SECRET).", ephemeral=True
+                "⚠️ eBay isn't set up (EBAY_CLIENT_ID / EBAY_CLIENT_SECRET).", ephemeral=True
             )
             return
         if self.ctx.market.scanning:
@@ -874,173 +843,22 @@ class TrackerCommands(commands.Cog):
             embed=scan_embed(report, self.ctx.settings.market), ephemeral=not show_public
         )
 
-    # ── admin ─────────────────────────────────────────────────────────────
-
-    @app_commands.command(description="[admin] Check a product right now")
-    @app_commands.autocomplete(product=product_autocomplete)
-    async def check(self, interaction: discord.Interaction[Any], product: str) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        await self._audit(interaction, "stock.check", product)
-        rows, error = await self._resolve(product, None)
-        if error:
-            await interaction.followup.send(f"⚠️ {error}", ephemeral=True)
-            return
-        pages = {
-            (r.listing.region, slug)
-            for r in rows
-            if r.listing.source == SourceKey.UNIFI and (slug := slug_from_url(r.listing.url))
-        }
-        for region, slug in pages:
-            await self.ctx.unifi.poll_product(region, slug)
-        for row in rows:
-            if row.listing.source != SourceKey.UNIFI:
-                await self.ctx.retail.poll(
-                    row.listing.id, row.listing.url, SourceKey(row.listing.source)
-                )
-        await self.ctx.dispatcher.dispatch()
-        async with self.ctx.sessions() as session:
-            refreshed = [
-                r
-                for r in await variant_listings(session, rows[0].variant.id)
-                if r.listing.id in {x.listing.id for x in rows}
-            ] or rows
-        await interaction.followup.send(
-            "🔄 Checked now:\n" + _paginate([_row_line(r) for r in refreshed]), ephemeral=True
-        )
-
-    @app_commands.command(description="[admin] Set how often a product is polled")
-    @app_commands.autocomplete(product=product_autocomplete)
-    @app_commands.choices(
-        level=[app_commands.Choice(name=p.value, value=p.value) for p in Priority]
-    )
-    async def priority(
-        self, interaction: discord.Interaction[Any], product: str, level: str
-    ) -> None:
-        async with self.ctx.sessions() as session, session.begin():
-            variant = await resolve_variant(session, product)
-            changed = await set_priority(session, variant.id, level) if variant else 0
-        if variant:
-            await self._audit(interaction, "stock.priority", variant.sku, level=level)
-        await interaction.response.send_message(
-            f"✅ `{variant.sku}` priority → **{level}** on {changed} listing(s)."
-            if variant
-            else f"⚠️ No product matches `{product}`.",
-            ephemeral=True,
-        )
-
-    @app_commands.command(
-        description="[admin] Post a sample alert here to test formatting and push"
-    )
-    @app_commands.describe(kind="Alert type", delay="Seconds to wait (leave the app to test push)")
-    @app_commands.choices(
-        kind=[
-            app_commands.Choice(name=label, value=k.value)
-            for k, (_, label, _) in KIND_STYLE.items()
-        ]
-    )
-    async def testalert(
-        self,
-        interaction: discord.Interaction[Any],
-        kind: str = EventKind.BACK_IN_STOCK.value,
-        delay: app_commands.Range[int, 0, 60] = 0,
-    ) -> None:
-        if interaction.channel is None:
-            return
-        await self._audit(interaction, "alert.test", kind)
-        await interaction.response.send_message(
-            f"🧪 Sending a sample `{kind}` alert in {delay}s.", ephemeral=True
-        )
-        event = RadarEvent(
-            id=0,
-            kind=EventKind(kind),
-            occurred_at=datetime.now(UTC),
-            old_value="$199.00" if kind == EventKind.PRICE_CHANGE else None,
-            new_value="$189.00" if kind == EventKind.PRICE_CHANGE else None,
-            listing_id=None,
-            source="unifi",
-            region="us",
-            url="https://store.ui.com/us/en/products/u7-pro",
-            sku="U7-Pro",
-            product_name="Access Point U7 Pro (TEST)",
-            category="wifi-flagship",
-            pack_size=1,
-            status=StockStatus.IN_STOCK,
-            price_cents=18900,
-            currency="USD",
-            restock_eta=None,
-            is_early_access=kind == EventKind.EARLY_ACCESS,
-        )
-        plan = AlertPlan(
-            event=event,
-            important=True,
-            channel_id=None,
-            mention_user_ids=[str(interaction.user.id)],
-        )
-        await asyncio.sleep(delay)
-        await interaction.channel.send(  # type: ignore[union-attr]
-            content=alert_content(plan),
-            embed=alert_embed(event),
-            view=alert_view(None, event.url),
-        )
-
-    @app_commands.command(description="[admin] Delete this bot's old messages now")
-    async def cleanup(self, interaction: discord.Interaction[Any]) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        guild = self._guild(interaction)
-        channels = [c for c in (guild.alert_channel_id, guild.radar_channel_id) if c]
-        deleted = await cleanup_messages(
-            self.bot, channels, self.ctx.settings.cleanup, datetime.now(UTC)
-        )
-        await self._audit(interaction, "messages.cleanup", deleted=deleted)
-        await interaction.followup.send(f"🧹 Deleted {deleted} old message(s).", ephemeral=True)
-
-    # ── members: privacy ──────────────────────────────────────────────────
-
-    @app_commands.command(description="Delete everything the tracker stores about you")
-    @app_commands.describe(confirm="Set to True to permanently delete your watches and settings")
-    async def forgetme(self, interaction: discord.Interaction[Any], confirm: bool = False) -> None:
-        if not confirm:
-            await interaction.response.send_message(
-                "This deletes all your watches and subscriptions in every server. "
-                "Run `/forgetme confirm:True` to proceed.",
-                ephemeral=True,
-            )
-            return
-        async with self.ctx.sessions() as session, session.begin():
-            counts = await forget_user(session, str(interaction.user.id))
-            # Logged without the member's identity: the point is to forget them.
-            await audit(session, "member.forget", guild_id=interaction.guild_id, details=counts)
-        await interaction.response.send_message(
-            f"🗑️ Done: removed {counts['watches']} watch(es) and subscription(s).", ephemeral=True
-        )
-
-    @app_commands.command(description="What this bot does and what it stores about you")
-    async def about(self, interaction: discord.Interaction[Any]) -> None:
-        embed = discord.Embed(
-            title="About this tracker",
-            color=0x5865F2,
-            description=(
-                "A private stock and price tracker run by this server's owner.\n\n"
-                "**What it stores about you:** your Discord user ID, the products you watch "
-                "(with any max price), and subscriptions. Nothing else; it can't read messages.\n"
-                "**Delete it:** `/forgetme confirm:True` removes it all, in every server.\n"
-                "**Who sees it:** only the bot's operator."
-            ),
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
     # ── servers ───────────────────────────────────────────────────────────
 
-    server = app_commands.Group(name="server", description="This server's tracker settings")
+    server = app_commands.Group(
+        name="server",
+        description="This server's tracker settings",
+        default_permissions=discord.Permissions(manage_guild=True),
+    )
 
-    @server.command(name="settings", description="Show this server's alert settings")
+    @server.command(name="settings", description="Alert settings, a test alert, and cleanup")
     async def server_settings(self, interaction: discord.Interaction[Any]) -> None:
         g = self._guild(interaction)
 
         def channel(cid: int | None) -> str:
             return f"<#{cid}>" if cid else "—"
 
-        embed = discord.Embed(title=f"⚙️ {interaction.guild.name if interaction.guild else ''}")
+        embed = discord.Embed(title=interaction.guild.name if interaction.guild else "Settings")
         embed.add_field(name="Alerts channel", value=channel(g.alert_channel_id))
         embed.add_field(
             name="Radar channel",
@@ -1056,7 +874,52 @@ class TrackerCommands(commands.Cog):
         embed.add_field(name="Cooldown", value=f"{g.cooldown_minutes:g} min")
         embed.add_field(name="Digest after", value=f"{g.digest_threshold} events")
         embed.add_field(name="Resale valuations", value="shown" if g.show_valuations else "hidden")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        embed.set_footer(text="Change these with /server configure.")
+        await interaction.response.send_message(
+            embed=embed, view=ServerTools(self, g), ephemeral=True
+        )
+
+    async def _send_sample(self, interaction: discord.Interaction[Any]) -> None:
+        if interaction.channel is None:
+            return
+        await self._audit(interaction, "alert.test", EventKind.BACK_IN_STOCK.value)
+        event = RadarEvent(
+            id=0,
+            kind=EventKind.BACK_IN_STOCK,
+            occurred_at=datetime.now(UTC),
+            old_value=None,
+            new_value=None,
+            listing_id=None,
+            source="unifi",
+            region="us",
+            url="https://store.ui.com/us/en/products/u7-pro",
+            sku="U7-Pro",
+            product_name="Access Point U7 Pro (TEST)",
+            category="wifi-flagship",
+            pack_size=1,
+            status=StockStatus.IN_STOCK,
+            price_cents=18900,
+            currency="USD",
+            restock_eta=None,
+            is_early_access=False,
+        )
+        plan = AlertPlan(
+            event=event,
+            important=True,
+            channel_id=None,
+            mention_user_ids=[str(interaction.user.id)],
+        )
+        await interaction.channel.send(  # type: ignore[union-attr]
+            content=alert_content(plan), embed=alert_embed(event), view=alert_view(None, event.url)
+        )
+
+    async def _cleanup(self, interaction: discord.Interaction[Any], guild: GuildConfig) -> int:
+        channels = [c for c in (guild.alert_channel_id, guild.radar_channel_id) if c]
+        deleted = await cleanup_messages(
+            self.bot, channels, self.ctx.settings.cleanup, datetime.now(UTC)
+        )
+        await self._audit(interaction, "messages.cleanup", deleted=deleted)
+        return deleted
 
     @server.command(name="configure", description="Change this server's alert settings")
     @app_commands.describe(
@@ -1067,6 +930,7 @@ class TrackerCommands(commands.Cog):
         ping_kinds="Comma-separated: back_in_stock, early_access, new_listing, relisted, deal",
         cooldown_minutes="Suppress repeats of the same alert for this long",
         digest_threshold="Combine more routine events than this into a digest",
+        valuations="Show eBay-based resale numbers here (bot owner only)",
         clear_radar="Send radar events to the alerts channel",
         clear_mention="Stop pinging a role",
     )
@@ -1080,9 +944,15 @@ class TrackerCommands(commands.Cog):
         ping_kinds: str | None = None,
         cooldown_minutes: app_commands.Range[float, 0, 1440] | None = None,
         digest_threshold: app_commands.Range[int, 1, 100] | None = None,
+        valuations: bool | None = None,
         clear_radar: bool = False,
         clear_mention: bool = False,
     ) -> None:
+        if valuations is not None and self._role(interaction) < Role.OWNER:
+            await interaction.response.send_message(
+                "⛔ Only the bot owner can show or hide resale valuations.", ephemeral=True
+            )
+            return
         changes: dict[str, Any] = {}
         warnings: list[str] = []
         for key, channel in (
@@ -1117,6 +987,13 @@ class TrackerCommands(commands.Cog):
             changes["cooldown_minutes"] = float(cooldown_minutes)
         if digest_threshold is not None:
             changes["digest_threshold"] = int(digest_threshold)
+        if valuations is not None:
+            changes["show_valuations"] = valuations
+            if valuations:
+                warnings.append(
+                    "eBay's license treats showing these to other people as displaying eBay "
+                    "content; keep it to servers that are just you."
+                )
         if not changes:
             await interaction.response.send_message("Nothing to change.", ephemeral=True)
             return
@@ -1125,37 +1002,13 @@ class TrackerCommands(commands.Cog):
                 session,
                 str(interaction.guild_id),
                 changes,
-                allowed=ADMIN_FIELDS,
+                allowed=ADMIN_FIELDS | ({"show_valuations"} if valuations is not None else set()),
                 actor_id=str(interaction.user.id),
                 actor_name=str(interaction.user),
             )
         note = ("\n" + "\n".join(f"⚠️ {w}" for w in warnings)) if warnings else ""
         await interaction.response.send_message(
             f"✅ Updated: {', '.join(sorted(changes))}.{note}", ephemeral=True
-        )
-
-    @server.command(
-        name="valuations", description="[owner] Show or hide eBay-derived resale numbers here"
-    )
-    async def server_valuations(self, interaction: discord.Interaction[Any], enabled: bool) -> None:
-        async with self.ctx.sessions() as session, session.begin():
-            await update_config(
-                session,
-                str(interaction.guild_id),
-                {"show_valuations": enabled},
-                allowed=frozenset({"show_valuations"}),
-                actor_id=str(interaction.user.id),
-                actor_name=str(interaction.user),
-            )
-        note = (
-            " eBay's license treats showing these to other people as displaying eBay content; "
-            "keep it to servers that are just you."
-            if enabled
-            else ""
-        )
-        await interaction.response.send_message(
-            f"✅ Resale valuations {'shown' if enabled else 'hidden'} in this server.{note}",
-            ephemeral=True,
         )
 
     @server.command(name="audit", description="Recent admin actions (this server; owner sees all)")
@@ -1166,30 +1019,50 @@ class TrackerCommands(commands.Cog):
         async with self.ctx.sessions() as session:
             entries = await recent_audit(session, limit=limit, guild_id=scope)
         text = "\n".join(f"`{describe(e)}`"[:300] for e in entries) or "No entries."
-        embed = discord.Embed(title="🧾 Audit log", description=text[:4000], color=0x99AAB5)
+        embed = discord.Embed(title="Audit log", description=text[:4000], color=0x99AAB5)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @server.command(name="list", description="[owner] All servers and their approval status")
-    async def server_list(self, interaction: discord.Interaction[Any]) -> None:
-        async with self.ctx.sessions() as session:
-            rows = await list_guilds(session)
-        icon = {GuildStatus.APPROVED: "✅", GuildStatus.PENDING: "⏳", GuildStatus.BLOCKED: "⛔"}
-        lines = [
-            f"{icon.get(GuildStatus(r.status), '?')} "
-            f"**{discord.utils.escape_markdown(r.name or '?')}** "
-            f"`{r.guild_id}`{' · valuations' if r.show_valuations else ''}"
-            for r in rows
+    @server.command(name="access", description="[owner] List servers, or approve or block one")
+    @app_commands.describe(
+        guild_id="The server's ID (leave empty to list every server)",
+        decision="What to do with that server",
+    )
+    @app_commands.choices(
+        decision=[
+            app_commands.Choice(name="Approve", value=GuildStatus.APPROVED.value),
+            app_commands.Choice(name="Block (the bot leaves)", value=GuildStatus.BLOCKED.value),
         ]
-        embed = discord.Embed(title="Servers", description=_paginate(lines, 40), color=0x5865F2)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @server.command(name="approve", description="[owner] Approve a server by ID")
-    async def server_approve(self, interaction: discord.Interaction[Any], guild_id: str) -> None:
-        await self._decide(interaction, guild_id, GuildStatus.APPROVED)
-
-    @server.command(name="block", description="[owner] Block a server by ID (the bot leaves it)")
-    async def server_block(self, interaction: discord.Interaction[Any], guild_id: str) -> None:
-        await self._decide(interaction, guild_id, GuildStatus.BLOCKED)
+    )
+    async def server_access(
+        self,
+        interaction: discord.Interaction[Any],
+        guild_id: str | None = None,
+        decision: str | None = None,
+    ) -> None:
+        if guild_id is None or decision is None:
+            if guild_id or decision:
+                await interaction.response.send_message(
+                    "⚠️ Give both a server ID and a decision, or neither to list servers.",
+                    ephemeral=True,
+                )
+                return
+            async with self.ctx.sessions() as session:
+                rows = await list_guilds(session)
+            icon = {
+                GuildStatus.APPROVED: "✅",
+                GuildStatus.PENDING: "⏳",
+                GuildStatus.BLOCKED: "⛔",
+            }
+            lines = [
+                f"{icon.get(GuildStatus(r.status), '?')} "
+                f"**{discord.utils.escape_markdown(r.name or '?')}** "
+                f"`{r.guild_id}`{' · valuations' if r.show_valuations else ''}"
+                for r in rows
+            ]
+            embed = discord.Embed(title="Servers", description=_paginate(lines, 40), color=0x5865F2)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        await self._decide(interaction, guild_id, GuildStatus(decision))
 
     async def _decide(
         self, interaction: discord.Interaction[Any], guild_id: str, status: GuildStatus
@@ -1212,3 +1085,113 @@ class TrackerCommands(commands.Cog):
             await interaction.followup.send(message, ephemeral=True)
         else:
             await interaction.response.send_message(message, ephemeral=True)
+
+
+# ── buttons under command replies (ephemeral: only the person who ran it sees them) ──
+
+
+def _button(label: str, style: discord.ButtonStyle, handler: Any) -> discord.ui.Button[Any]:
+    button: discord.ui.Button[Any] = discord.ui.Button(label=label, style=style)
+    button.callback = handler  # type: ignore[method-assign]
+    return button
+
+
+class StockActions(discord.ui.View):
+    """Open, Watch, and (by role) Profit, Check now, and Refresh eBay under a /stock reply."""
+
+    def __init__(
+        self,
+        cog: TrackerCommands,
+        rows: list[ListingRow],
+        *,
+        profit: bool,
+        check: bool,
+        refresh: bool,
+    ) -> None:
+        super().__init__(timeout=900)
+        self.cog = cog
+        self.rows = rows
+        first = rows[0].listing
+        if first.url:
+            self.add_item(discord.ui.Button(label="Open", url=first.url))
+        self.add_item(WatchButton(first.id))
+        if profit:
+            self.add_item(_button("Profit", discord.ButtonStyle.primary, self._profit))
+        if check:
+            self.add_item(_button("Check now", discord.ButtonStyle.secondary, self._check))
+        if refresh:
+            self.add_item(_button("Refresh eBay", discord.ButtonStyle.secondary, self._refresh))
+
+    async def _profit(self, interaction: discord.Interaction[Any]) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        embed = await self.cog._profit_embed(self.rows[0].variant.id)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    async def _refresh(self, interaction: discord.Interaction[Any]) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        embed = await self.cog._profit_embed(self.rows[0].variant.id, refresh=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    async def _check(self, interaction: discord.Interaction[Any]) -> None:
+        await interaction.response.defer()
+        await self.cog._audit(interaction, "stock.check", self.rows[0].variant.sku)
+        self.rows = await self.cog._check_now(self.rows)
+        embed = await self.cog._stock_embed(self.rows)
+        await interaction.edit_original_response(embed=embed, view=self)
+
+
+class ForgetMe(discord.ui.View):
+    """'Delete my data', then a confirmation naming what goes."""
+
+    def __init__(self, cog: TrackerCommands, user_id: str, *, confirming: bool = False) -> None:
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.user_id = user_id
+        if confirming:
+            self.add_item(
+                _button("Yes, delete everything", discord.ButtonStyle.danger, self._delete)
+            )
+            self.add_item(_button("Cancel", discord.ButtonStyle.secondary, self._cancel))
+        else:
+            self.add_item(_button("Delete my data", discord.ButtonStyle.danger, self._ask))
+
+    async def _ask(self, interaction: discord.Interaction[Any]) -> None:
+        await interaction.response.edit_message(
+            content="Delete all your watches and alert settings, in every server? "
+            "This can't be undone.",
+            view=ForgetMe(self.cog, self.user_id, confirming=True),
+        )
+
+    async def _cancel(self, interaction: discord.Interaction[Any]) -> None:
+        await interaction.response.edit_message(content=None, view=ForgetMe(self.cog, self.user_id))
+
+    async def _delete(self, interaction: discord.Interaction[Any]) -> None:
+        counts = await self.cog._forget(interaction)
+        await interaction.response.edit_message(
+            content=f"Done: removed {counts['watches']} watch(es) and alert setting(s).",
+            view=None,
+        )
+
+
+class ServerTools(discord.ui.View):
+    """Send a sample alert here, or clear out the bot's old messages."""
+
+    def __init__(self, cog: TrackerCommands, guild: GuildConfig) -> None:
+        super().__init__(timeout=600)
+        self.cog = cog
+        self.guild = guild
+        self.add_item(_button("Send a test alert here", discord.ButtonStyle.primary, self._test))
+        self.add_item(
+            _button("Delete old bot messages", discord.ButtonStyle.secondary, self._cleanup)
+        )
+
+    async def _test(self, interaction: discord.Interaction[Any]) -> None:
+        await interaction.response.send_message(
+            "Posting a sample Back in stock alert in this channel.", ephemeral=True
+        )
+        await self.cog._send_sample(interaction)
+
+    async def _cleanup(self, interaction: discord.Interaction[Any]) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        deleted = await self.cog._cleanup(interaction, self.guild)
+        await interaction.followup.send(f"Deleted {deleted} old message(s).", ephemeral=True)

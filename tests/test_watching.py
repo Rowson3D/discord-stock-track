@@ -209,7 +209,7 @@ async def test_watch_manager_mutes_and_removes_only_own_watches(sessions):
     now = datetime.now(UTC)
     assert "ping ≤ $150.00" in watch_line(rows[0], now)
     assert "alerts: Deal" in watch_line(rows[0], now)
-    assert watches_embed(rows, now).title == "🔔 Your watches (1)"
+    assert watches_embed(rows, now).title == "Your watches (1)"
 
     bot = SimpleNamespace(ctx=SimpleNamespace(sessions=sessions))
     view = WatchManager(bot, "7", rows)  # type: ignore[arg-type]
@@ -229,7 +229,33 @@ async def test_watch_manager_mutes_and_removes_only_own_watches(sessions):
 
     me = interaction("7")
     await view.apply(me, "remove")  # type: ignore[arg-type]
-    assert "You aren't watching anything now" in me.response.edited["content"]
+    assert me.response.edited["content"] == "Removed 1 watch(es)."
+    assert "Nothing yet" in me.response.edited["embed"].description
     async with sessions() as session:
         owners = list(await session.scalars(select(Watch.discord_user_id)))
     assert owners == ["8"]  # the other member's watch is untouched
+
+
+async def test_watches_switches_everything_alerts_by_region(sessions):
+    """/watches carries 'ping me for every important alert', limited to one region or off."""
+    bot = SimpleNamespace(ctx=SimpleNamespace(sessions=sessions))
+    view = WatchManager(bot, "7", [], guild_id="1", regions=["us", "ca"])  # type: ignore[arg-type]
+    labels = [o.label for o in view.children[0].options]  # type: ignore[attr-defined]
+    assert labels[:3] == [
+        "Every important alert: Off",
+        "Every important alert: Every region",
+        "Every important alert: US stores only",
+    ]
+
+    me = interaction("7")
+    await view.set_everything(me, "us")  # type: ignore[arg-type]
+    assert "every important alert:** US only" in me.response.edited["embed"].description
+    async with sessions() as session:
+        [sub] = list(await session.scalars(select(Watch).where(Watch.listing_id.is_(None))))
+    assert (sub.discord_user_id, sub.guild_id, sub.regions) == ("7", "1", "us")
+
+    me = interaction("7")
+    await view.set_everything(me, "off")  # type: ignore[arg-type]
+    assert "every important alert:** off" in me.response.edited["embed"].description
+    async with sessions() as session:
+        assert list(await session.scalars(select(Watch))) == []

@@ -30,7 +30,7 @@ something worth buying appears.
   prices if your app gets Marketplace Insights access) and from manual entries. Each listing title
   is matched against the exact model: no "U7 Pro Max" counted as a U7 Pro, no lots, accessories,
   or for-parts listings. The tracker then estimates net profit after eBay fees, shipping, and tax,
-  plus ROI, sell-through, and confidence, ranks everything with `/opportunities`, and fires a
+  plus ROI, sell-through, and confidence, ranks everything with `/flips`, and fires a
   **deal** alert when an item you can buy right now clears your profit threshold **on credible
   evidence**: eBay sold prices, your own recorded sales, or **scarcity pricing** (eBay prices
   recorded on days the store was sold out). eBay *asking* prices for something the store has in
@@ -100,40 +100,45 @@ mention role, admin role, ping rules, cooldown, and digest size (`/server config
 
 - **Allowlist.** When the bot is added to a server that isn't pre-approved, it DMs you
   **Approve** and **Block** buttons. It does nothing there until approved, and leaves after
-  `DISCORD_APPROVAL_GRACE_MINUTES` (default 10). `/server list`, `/server approve`, and
-  `/server block` manage this later.
+  `DISCORD_APPROVAL_GRACE_MINUTES` (default 10). `/server access` lists servers and approves
+  or blocks one later.
 - **Roles.**
   - **Owner** (you): everything, everywhere.
   - **Server admin** (Manage Server, the server's configured admin role, or
-    `DISCORD_ADMIN_USER_IDS`): that server's settings, `/check`, `/testalert`, `/cleanup`,
-    `/status`.
+    `DISCORD_ADMIN_USER_IDS`): that server's settings, test alerts and cleanup
+    (`/server settings`), **Check now** under `/stock`, and `/status`.
   - **Member:** watch and view.
 - **Pings stay local.** A watch or subscription pings only in the server where it was set.
   (Watches from before multi-server support belong to the home server.)
 - **Resale valuations** (profit numbers, deal alerts) are hidden in every server except your
-  home server until you run `/server valuations enabled:True`. eBay's license treats showing
+  home server until you run `/server configure valuations:True`. eBay's license treats showing
   them to other people as displaying eBay content, so keep them to servers that are just you.
 - **Audit log.** Every admin action (approvals, setting changes, comps, checks, cleanup) is
   recorded in a log the database itself makes append-only. View it with `/server audit`:
   server admins see their own server's entries, and you see all of them.
-- **Privacy.** `/about` explains what's stored; `/forgetme confirm:True` deletes a member's
-  watches and subscriptions everywhere.
+- **Privacy.** `/about` explains what's stored and has a **Delete my data** button that removes
+  a member's watches and alert settings everywhere.
 
 ## Commands
 
+Members see six commands. Admin and owner commands are hidden from members (Discord's
+**Manage Server** permission), and everything else is a button on the reply it belongs to.
+
 | Command | Who | What it does |
 |---|---|---|
-| `/watch product [region] [max_price]` | Member | Get pinged for back in stock, Early Access, and price drops. Accepts SKUs, names, or store URLs. |
-| `/unwatch product`, `/watches` | Member | Stop watching; `/watches` lists yours with a picker and Remove, Mute 24h, Unmute, and **Test** buttons (Test sends a sample alert for that watch and shows which alert types ping you, and why). Per-item alert types, target prices, and rules are in the owner panel's Watchlist. |
-| `/subscribe`, `/unsubscribe` | Member | Pings for every important alert in this server. |
-| `/stock product`, `/radar`, `/restocks` | Member | Status and history, radar events, upcoming restocks. |
-| `/opportunities`, `/value product` | Member* | Resale rankings and valuations (*only where valuations are enabled). |
-| `/about`, `/forgetme` | Member | What's stored; delete your data. |
-| `/status`, `/check product`, `/testalert`, `/cleanup` | Server admin | Health, check now, sample alert, delete old bot messages. |
-| `/server settings`, `/server configure`, `/server audit` | Server admin | This server's settings and audit log. |
-| `/server list`, `/server approve`, `/server block`, `/server valuations` | Owner | Server allowlist and valuation display. |
-| `/comp`, `/priority`, `/value … refresh:True` | Owner | Manual comps, polling priority, fresh eBay data. |
+| `/watch product [region] [max_price]` | Member | Get pinged for back in stock, Early Access, and price drops. Accepts SKUs, names, or store links. |
+| `/watches` | Member | Your watches, with Remove, Mute 24h, Unmute, and **Test** (sends a sample alert and shows which alert types ping you, and why), plus the **ping me for every important alert** switch, by region. Per-item alert types, target prices, and rules are in the panel's Watchlist. |
+| `/stock product` | Member | Status and history per store, with **Open**, **Watch**, **Profit** (where valuations are shown), **Check now** (server admins), and **Refresh eBay** (owner). |
+| `/flips` | Member* | Resale opportunities ranked by profit (*only where valuations are shown). |
+| `/radar [kind] [region]` | Member | What just changed. Kind **Upcoming restocks** lists announced restock dates. |
+| `/about` | Member | What's stored, and **Delete my data**. |
+| `/status` | Server admin | Health: stores, jobs, events. |
+| `/server settings`, `/server configure`, `/server audit` | Server admin | This server's alert settings (with **Send a test alert here** and **Delete old bot messages**), changing them, and its audit log. `valuations:` is owner-only. |
+| `/server access [guild_id] [decision]` | Owner | List servers, or approve or block one. |
+| `/comp` | Owner | Record a resale price you saw or sold at. |
 | `/scan [limit] [min_retail] [public]` | Owner | Live read-only profit scan of the store against eBay: top flips, pack breakouts (buy a multi-pack, sell singles, with the per-unit break-even), and items that lose money. One eBay call per item; nothing is stored or alerted. |
+
+Polling priority is set in the panel's Watchlist.
 
 Alert messages include **Open** and **Watch** buttons. Both work for anyone in an approved
 server and survive restarts.
@@ -292,7 +297,7 @@ tracker/
   U7-Pro returned 100 results; 24 matched, and 65 were correctly rejected as other models (XG, XGS,
   Wall, Max, Outdoor, black variants).
 - **eBay listings are never stored**, so individual comps can't be reviewed later. Use
-  `tracker market collect <sku>` or `/value <sku> refresh:true` to see the live listings and why
+  `tracker market collect <sku>` or **Refresh eBay** under `/stock` to see the live listings and why
   each was matched or rejected.
 
 ## Troubleshooting
