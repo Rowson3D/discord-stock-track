@@ -6,8 +6,9 @@ whether the branch is ahead of it. When it is, the owner gets a DM listing what 
 "Update now" button that only writes ``<data>/update-request`` (a commit id).
 
 On the host, ``scripts/update.sh --if-requested`` runs every minute from cron. It checks that
-the commit is on GitHub's branch, fast-forwards to it, rebuilds and restarts the bot, and leaves
-``<data>/update-result``. The restarted bot reads that and tells the owner how it went.
+the commit is on GitHub's branch, fast-forwards to it, rebuilds and restarts the bot, and waits for
+it to become healthy (rolling back to the previous image and database if it doesn't). It leaves
+``<data>/update-result``, which the bot reads within a minute and reports to the owner.
 """
 
 from __future__ import annotations
@@ -63,6 +64,7 @@ class Result:
     sha: str
     finished: str
     detail: str
+    target: str = ""  # the commit that was asked for, so a failed update can be tried again
 
 
 @dataclass(slots=True)
@@ -118,6 +120,7 @@ def parse_result(text: str) -> Result | None:
         sha=values.get("sha", "").strip(),
         finished=values.get("finished", "").strip(),
         detail=values.get("detail", "").strip()[:900],
+        target=target if SHA_RE.fullmatch(target := values.get("target", "").strip()) else "",
     )
 
 
@@ -136,6 +139,8 @@ class Updater:
         self._notify = notify
         self._transport = transport
         self._clock = clock
+        # What the last GitHub check found; Health offers it as "Update to …".
+        self.available: Available | None = None
 
     @property
     def version(self) -> str:
@@ -192,9 +197,13 @@ class Updater:
 
     # ── the periodic check ───────────────────────────────────────────────
 
-    async def check(self) -> None:
+    async def check_local(self) -> None:
+        """Report a finished update and a request nobody picked up (local files only)."""
         await self._report_result()
         await self._report_stale_request()
+
+    async def check(self) -> None:
+        """Ask GitHub whether there's a newer version, and DM the owner once per new version."""
         if not self.settings.configured:
             return
         if not self.version:
@@ -216,6 +225,10 @@ class Updater:
             except UpdateError as exc:
                 logger.info("Update check: %s", exc)
                 return
+            except httpx.HTTPError as exc:
+                logger.warning("Update check: GitHub didn't answer (%s)", type(exc).__name__)
+                return
+        self.available = available
         state = self._state()
         if available is None or state.get("notified") == available.head:
             return

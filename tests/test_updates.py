@@ -123,7 +123,7 @@ async def test_the_result_is_reported_after_the_restart(tmp_path: Path) -> None:
         + "\nfinished=2026-11-25T12:00:00Z\ndetail=bbbbbbb Second|ccccccc First\n"
     )
     up, notices = updater(tmp_path, version=NEW)
-    await up.check()
+    await up.check_local()
     assert notices[0].result == Result(
         True, NEW, "2026-11-25T12:00:00Z", "bbbbbbb Second|ccccccc First"
     )
@@ -133,6 +133,43 @@ async def test_the_result_is_reported_after_the_restart(tmp_path: Path) -> None:
     assert embed.title == "✅ FlipScout updated to bbbbbbb"
     assert embed.description == "• bbbbbbb Second\n• ccccccc First"
     assert view is None
+
+
+async def test_a_rolled_back_update_offers_try_again(tmp_path: Path) -> None:
+    (tmp_path / RESULT_FILE).write_text(
+        f"status=failed\nsha={OLD}\ntarget={NEW}\ndetail=bbbbbbb didn't come up healthy\n"
+    )
+    up, notices = updater(tmp_path)
+    await up.check_local()
+    assert notices[0].result is not None
+    assert notices[0].result.target == NEW
+    embed, view = notice_message(notices[0])
+    assert "Still running `aaaaaaa`" in (embed.description or "")
+    assert view is not None
+    retry = getattr(view.children[0], "item", view.children[0])
+    assert (retry.label, retry.custom_id) == ("Try again", f"flipscout:update:{NEW}")
+    # Nothing to retry when the commit asked for is the one running, or none was asked for.
+    for target in (OLD, "", "main"):
+        result = parse_result(f"status=failed\ntarget={target}\n")
+        assert result is not None
+        assert notice_message(Notice(result=result, running=OLD))[1] is None
+
+
+async def test_the_github_check_remembers_what_it_found(tmp_path: Path) -> None:
+    transport, _ = github()
+    up, _ = updater(tmp_path, transport)
+    await up.check()
+    assert up.available is not None
+    assert up.available.head == NEW
+    up._transport = github("identical")[0]
+    await up.check()
+    assert up.available is None
+
+    def offline(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("no network", request=request)
+
+    up._transport = httpx.MockTransport(offline)
+    await up.check()  # logged, not raised
 
 
 def test_a_failed_update_says_what_is_still_running() -> None:
@@ -150,11 +187,11 @@ async def test_a_request_nobody_picks_up_is_reported(tmp_path: Path) -> None:
     up.request(NEW)
     recent = (NOW - timedelta(minutes=1)).timestamp()
     os.utime(tmp_path / REQUEST_FILE, (recent, recent))
-    await up.check()
+    await up.check_local()
     assert notices == []
     old = (NOW - timedelta(minutes=11)).timestamp()
     os.utime(tmp_path / REQUEST_FILE, (old, old))
-    await up.check()
+    await up.check_local()
     assert notices[0].stale_request == NEW
     assert not (tmp_path / REQUEST_FILE).exists()
     embed, _ = notice_message(notices[0])

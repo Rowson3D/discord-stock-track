@@ -31,12 +31,16 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
+    # Healthy while the bot is connected to Discord and its database answers: it touches
+    # /tmp/flipscout-heartbeat every 20s (tracker/heartbeat.py). scripts/update.sh waits for
+    # this after an update and rolls back if it never comes.
     healthcheck:
-      test: ["CMD", "python", "-c", "import sqlite3; sqlite3.connect('/data/tracker.db').execute('select 1')"]
+      test: ["CMD", "python", "-c", "import os,sys,time; sys.exit(time.time() - os.path.getmtime('/tmp/flipscout-heartbeat') > 90)"]
       interval: 60s
       timeout: 10s
       retries: 3
-      start_period: 60s
+      start_period: 120s
+      start_interval: 5s
 
 volumes:
   stock-bot-data:

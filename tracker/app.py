@@ -25,6 +25,7 @@ from tracker.discovery.bestbuy import BestBuySource
 from tracker.discovery.service import DiscoveryService
 from tracker.domain import ListingSnapshot, SourceKey
 from tracker.guilds import bootstrap as bootstrap_guilds
+from tracker.heartbeat import HEARTBEAT_SECONDS, beat
 from tracker.http import HttpClient
 from tracker.instance import InstanceLock, SchemaGuard, code_schema_head, lock_path_for
 from tracker.legacy import import_legacy
@@ -287,6 +288,14 @@ async def _run_locked(
             register_alert_sinks(settings, sessions, dispatcher, router, bot)
 
             panel = _build_panel(settings, sessions, scheduler, bot, unifi, retail, discovery)
+            ready = bot.is_ready if bot is not None else None
+            scheduler.add(
+                "heartbeat",
+                HEARTBEAT_SECONDS,
+                lambda: beat(sessions, ready),
+                initial_delay=5.0,
+                jitter=0,
+            )
 
             logger.info(
                 "Tracker running: regions=%s, catalog every %ss, hot poll every %ss",
@@ -393,6 +402,8 @@ def _build_bot(
             bot.updater.check,
             initial_delay=45.0,
         )
+        # Local files only (no GitHub): an update's result is reported within a minute.
+        scheduler.add("updates:result", 60.0, bot.updater.check_local, initial_delay=20.0)
     return bot
 
 

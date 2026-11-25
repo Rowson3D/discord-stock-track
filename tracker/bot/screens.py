@@ -70,6 +70,7 @@ from tracker.queries import (
 )
 from tracker.services.unifi import slug_from_url
 from tracker.sources.web import parse_money
+from tracker.updates import UpdateError
 from tracker.watching import Resolved, mute_watches, parse_regions, resolve_listings
 from tracker.watching import user_watch_rows as watch_rows
 from tracker.watchtest import SampleAlertError, plan_watch_test
@@ -1156,6 +1157,17 @@ async def health_screen(v: Viewer, state: str = "health") -> Screen:
         button("Refresh", "go", "health", row=4),
         button("Home", "go", HOME, row=4),
     ]
+    updater = getattr(v.bot, "updater", None)
+    if v.owner and updater is not None:
+        pending = updater.pending_request()
+        new = updater.available
+        if pending:
+            embed.add_field(name="Update", value=f"Updating to `{pending[:7]}`…", inline=False)
+        elif new is not None and new.head != updater.version:
+            count = f"{new.ahead_by} new commit{'s' if new.ahead_by != 1 else ''}"
+            embed.add_field(name="Update", value=f"{count} on GitHub", inline=False)
+            label = f"Update to {new.head[:7]}"
+            items.append(button(label, "upd", "health", row=3, style=discord.ButtonStyle.success))
     return Screen(embed, items)
 
 
@@ -1790,6 +1802,21 @@ async def toggle_valuations(v: Viewer, state: str, values: list[Any]) -> None:
         else "Valuations are hidden here now."
     )
     await _configure(v, {"show_valuations": show}, state, note)
+
+
+@handles("upd")
+async def update_bot(v: Viewer, state: str, values: list[Any]) -> None:
+    v.need(Role.OWNER)
+    updater = getattr(v.bot, "updater", None)
+    new = updater.available if updater is not None else None
+    if updater is None or new is None:
+        raise Denied("There's no update waiting.")
+    try:
+        message = updater.request(new.head)
+    except (UpdateError, OSError) as exc:
+        raise Denied(str(exc)) from exc
+    await v.show(await health_screen(v), content=message)
+    await v.audit("bot.update", new.head[:7])
 
 
 @handles("sscan")

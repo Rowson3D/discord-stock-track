@@ -436,3 +436,36 @@ async def test_alerts_open_details_privately(bot):
 def test_product_state_falls_back_home_when_too_long():
     assert screens.product_state(5, "flips|1|25|wifi") == "p|5|flips|1|25|wifi"
     assert screens.product_state(5, "flips|1|25|" + "x" * 120) == f"p|5|{HOME}"
+
+
+async def test_health_offers_a_waiting_update_to_the_owner(bot, tmp_path):
+    from tracker.settings import UpdateSettings
+    from tracker.updates import REQUEST_FILE, Available, Updater
+
+    running, new = "a" * 40, "b" * 40
+    config = UpdateSettings(_env_file=None, repo="someone/flipscout", FLIPSCOUT_VERSION=running)  # type: ignore[call-arg]
+
+    async def notify(_: Any) -> None:
+        pass
+
+    bot.updater = Updater(config, tmp_path, notify)
+    bot.ctx.settings.updates = config
+    admin = await screens.health_screen(await viewer(bot, role=Role.SERVER_ADMIN))
+    assert "fs:upd:health" not in ids(admin)
+
+    owner = await screens.health_screen(await viewer(bot, OWNER, Role.OWNER))
+    assert "fs:upd:health" not in ids(owner)  # nothing newer known yet
+    bot.updater.available = Available(new, 3, [], "")
+    owner = await screens.health_screen(await viewer(bot, OWNER, Role.OWNER))
+    assert "Update to bbbbbbb" in owner.labels()
+    check_discord_limits(owner)
+
+    pressed = await press(bot, "upd", "health", user_id=OWNER)
+    assert (tmp_path / REQUEST_FILE).read_text() == new + "\n"
+    assert "Updating to `bbbbbbb`" in pressed.shown["content"]
+    assert "Update to bbbbbbb" not in pressed.shown["view"].children[-1].item.label
+    fields = {f.name: f.value for f in pressed.shown["embed"].fields}
+    assert fields["Update"] == "Updating to `bbbbbbb`…"
+
+    member = await press(bot, "upd", "health")
+    assert "Only the bot owner" in member.response.sent[0]["content"]

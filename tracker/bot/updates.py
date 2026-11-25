@@ -25,10 +25,10 @@ class UpdateButton(
 ):
     """ "Update now" in the owner's DM. It only asks; the host's scripts/update.sh does the work."""
 
-    def __init__(self, sha: str) -> None:
+    def __init__(self, sha: str, label: str = "Update now") -> None:
         super().__init__(
             discord.ui.Button(
-                label="Update now",
+                label=label,
                 style=discord.ButtonStyle.success,
                 custom_id=f"flipscout:update:{sha}",
             )
@@ -61,8 +61,9 @@ class UpdateButton(
             logger.warning("Update request failed: %s", exc)
             await interaction.response.send_message(f"⚠️ {exc}", ephemeral=True)
             return
-        await bot.audit_owner("bot.update", short(self.sha), interaction.user)
+        # Answer first: Discord gives a button 3 seconds, and the audit log is a database write.
         await interaction.response.edit_message(content=message, view=None)
+        await bot.audit_owner("bot.update", short(self.sha), interaction.user)
 
 
 def update_view(sha: str, compare_url: str) -> discord.ui.View:
@@ -102,6 +103,7 @@ def notice_message(notice: Notice) -> tuple[discord.Embed, discord.ui.View | Non
                 color=GREEN,
             )
         else:
+            retry = result.target if result.target and result.target != notice.running else ""
             embed = discord.Embed(
                 title="⚠️ FlipScout update failed",
                 description=(
@@ -111,6 +113,10 @@ def notice_message(notice: Notice) -> tuple[discord.Embed, discord.ui.View | Non
                 + "Details: `data/update.log` on the server.",
                 color=RED,
             )
+            if retry:
+                view = discord.ui.View(timeout=None)
+                view.add_item(UpdateButton(retry, label="Try again"))
+                return embed, view
         return embed, None
     sha = notice.stale_request or ""
     embed = discord.Embed(
