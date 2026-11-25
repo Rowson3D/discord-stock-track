@@ -203,7 +203,9 @@ if update >"$log" 2>&1; then
 fi
 
 cat "$log"
-why=$(tail -n 3 "$log" | paste -sd ' ' - | cut -c1-500)
+# The last lines that say something (not Compose's "Container … Started" progress).
+why=$(grep -vE '^ *(Container|Image|Network|Volume) |^Backed up ' "$log" | tail -n 3 \
+  | paste -sd ' ' - | cut -c1-500)
 if [ -n "$stopped" ]; then
   failed=$(git rev-parse --short HEAD)
   if rollback; then
