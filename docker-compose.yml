@@ -1,6 +1,10 @@
 services:
   stock-bot:
-    build: .
+    build:
+      context: .
+      args:
+        # Set by scripts/update.sh, so the bot knows its own version (for update DMs).
+        GIT_SHA: ${GIT_SHA:-}
     image: tracker-network-stock:latest
     container_name: tracker-network-stock
     restart: unless-stopped

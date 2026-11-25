@@ -269,6 +269,10 @@ uv run tracker db upgrade              # apply migrations (also automatic on sta
 
 In Docker: `docker compose run --rm stock-bot tracker <command>`.
 
+## Updates
+
+The bot can DM you when GitHub has a newer version, with an **Update now** button that rebuilds and restarts it on the server. Setup and details: [docs/UPDATES.md](docs/UPDATES.md).
+
 ## Other Deployments
 
 **Local:** install [uv](https://docs.astral.sh/uv/), then `uv sync`, `cp

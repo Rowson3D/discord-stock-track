@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import discord
 from discord.ext import commands
@@ -13,6 +13,7 @@ from discord.ext import commands
 from tracker.audit import audit
 from tracker.bot.commands import TrackerCommands
 from tracker.bot.screens import Nav
+from tracker.bot.updates import UpdateButton, notice_message
 from tracker.bot.views import WatchButton
 from tracker.context import TrackerContext
 from tracker.guilds import (
@@ -24,6 +25,9 @@ from tracker.guilds import (
     seed_home,
 )
 from tracker.watchtest import WatchTest
+
+if TYPE_CHECKING:
+    from tracker.updates import Notice, Updater
 
 logger = logging.getLogger(__name__)
 
@@ -87,10 +91,11 @@ class TrackerBot(commands.Bot):
         self.ctx = ctx
         self.owner_ids: set[str] = set(ctx.settings.discord.owner_ids)
         self._pending_leaves: dict[int, asyncio.Task[None]] = {}
+        self.updater: Updater | None = None
 
     async def setup_hook(self) -> None:
         await self.add_cog(TrackerCommands(self))
-        self.add_dynamic_items(WatchButton, Nav, GuildDecisionButton)
+        self.add_dynamic_items(WatchButton, Nav, GuildDecisionButton, UpdateButton)
         if not self.owner_ids:
             info = await self.application_info()
             if info.team:
@@ -181,12 +186,31 @@ class TrackerBot(commands.Bot):
             ),
             color=0xFEE75C,
         )
-        for owner_id in self.owner_ids:
+        await self.dm_owners(embed, approval_view(guild.id))
+
+    async def dm_owners(self, embed: discord.Embed, view: discord.ui.View | None = None) -> int:
+        """Send a DM to every owner. Returns how many got it."""
+        await self.wait_until_ready()
+        sent = 0
+        for owner_id in sorted(self.owner_ids):
             try:
                 user = await self.fetch_user(int(owner_id))
-                await user.send(embed=embed, view=approval_view(guild.id))
-            except discord.HTTPException as exc:
-                logger.warning("Couldn't DM owner %s about server %s: %s", owner_id, guild.id, exc)
+                if view is None:
+                    await user.send(embed=embed)
+                else:
+                    await user.send(embed=embed, view=view)
+                sent += 1
+            except (discord.HTTPException, ValueError) as exc:
+                logger.warning("Couldn't DM owner %s (%s): %s", owner_id, embed.title, exc)
+        return sent
+
+    async def notify_update(self, notice: Notice) -> None:
+        embed, view = notice_message(notice)
+        await self.dm_owners(embed, view)
+
+    async def audit_owner(self, action: str, target: str, actor: discord.abc.User) -> None:
+        async with self.ctx.sessions() as session, session.begin():
+            await audit(session, action, actor_id=actor.id, actor_name=str(actor), target=target)
 
     async def _leave_if_unapproved(self, guild: discord.Guild, delay: float) -> None:
         try:

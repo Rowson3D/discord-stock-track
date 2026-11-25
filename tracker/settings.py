@@ -208,6 +208,26 @@ class CleanupSettings(BaseSettings):
     delete_delay_seconds: float = Field(default=1.25, ge=0.5)
 
 
+class UpdateSettings(BaseSettings):
+    """DM the owner when GitHub has a newer FlipScout, with an "Update now" button.
+
+    Needs the repo (``owner/name``, public) and the commit this build came from, which
+    scripts/update.sh bakes into the image as FLIPSCOUT_VERSION. The button only asks: the host
+    runs scripts/update.sh --if-requested from cron to do the update (see docs/UPDATES.md).
+    """
+
+    model_config = _config("FLIPSCOUT_UPDATE_")
+
+    repo: str = ""
+    branch: str = "main"
+    check_minutes: float = Field(default=30, ge=5)
+    version: str = Field(default="", validation_alias=AliasChoices("FLIPSCOUT_VERSION"))
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.repo.strip()) and "/" in self.repo
+
+
 class HttpSettings(BaseSettings):
     model_config = _config("TRACKER_HTTP_")
 
@@ -444,6 +464,7 @@ class Settings:
         self.panel = PanelSettings(_env_file=env_file)  # type: ignore[call-arg]
         self.discovery = DiscoverySettings(_env_file=env_file)  # type: ignore[call-arg]
         self.bestbuy = BestBuySettings(_env_file=env_file)  # type: ignore[call-arg]
+        self.updates = UpdateSettings(_env_file=env_file)  # type: ignore[call-arg]
 
     def secret_values(self) -> list[str]:
         """Every configured secret, so logging can mask it wherever it appears."""

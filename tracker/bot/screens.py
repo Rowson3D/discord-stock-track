@@ -1133,6 +1133,8 @@ async def health_screen(v: Viewer, state: str = "health") -> Screen:
         stats = await tracker_stats(session, now)
     embed = discord.Embed(title="Health", color=0x57F287, timestamp=now)
     embed.add_field(name="Uptime", value=str(now - v.ctx.started_at).split(".")[0])
+    version = v.ctx.settings.updates.version.strip()
+    embed.add_field(name="Version", value=f"`{version[:7]}`" if version else "unknown")
     embed.add_field(name="Watches", value=f"{stats.watches} · {stats.subscribers} subscribers")
     embed.add_field(
         name="Events", value=f"{stats.events_24h} in 24h · {stats.pending_events} pending"

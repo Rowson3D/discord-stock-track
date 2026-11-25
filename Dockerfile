@@ -26,4 +26,9 @@ RUN useradd --create-home --shell /usr/sbin/nologin stockbot \
 
 USER stockbot
 
+# The commit this image was built from (scripts/update.sh passes it). Last, so a new commit
+# doesn't invalidate the cached layers above; the bot compares it with GitHub for updates.
+ARG GIT_SHA=""
+ENV FLIPSCOUT_VERSION=${GIT_SHA}
+
 CMD ["tracker", "run"]

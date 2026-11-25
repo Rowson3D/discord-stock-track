@@ -379,6 +379,20 @@ def _build_bot(
             lambda: cleanup_messages(bot, channels, settings.cleanup, datetime.now(UTC)),
             initial_delay=120.0,
         )
+    if settings.updates.configured:
+        from tracker.updates import Updater
+
+        bot.updater = Updater(settings.updates, settings.app.data_dir, bot.notify_update)
+        if not bot.updater.version:
+            logger.info(
+                "Update DMs: this build doesn't know its commit (build with scripts/update.sh)"
+            )
+        scheduler.add(
+            "updates:check",
+            settings.updates.check_minutes * 60,
+            bot.updater.check,
+            initial_delay=45.0,
+        )
     return bot
 
 
