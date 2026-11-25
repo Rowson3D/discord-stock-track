@@ -51,12 +51,39 @@ def source_name(source: str | None) -> str:
         return source or "?"
 
 
+# Retailer listings get a SKU made from the store's own id (AMZN-B0…, BBY-661…): fine as a key,
+# unreadable in a list. Those are shown by product name instead.
+_STORE_IDS = (
+    "AMZN-",
+    "BBY-",
+    "BH-",
+    "NEWEGG-",
+    *(f"{source.value.upper()}-" for source in SourceKey if source is not SourceKey.UNIFI),
+)
+
+
+def item_name(sku: str | None, name: str | None, limit: int = 40) -> str:
+    """What to call a product in a list: its SKU, or its name when the SKU is a store id."""
+    if sku and not (name and sku.startswith(_STORE_IDS)):
+        return sku
+    text = (name or sku or "item").strip()
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def category_name(slug: str | None) -> str:
+    """'cloud-gateways-compact' → 'Cloud gateways compact'."""
+    if not slug:
+        return "Uncategorized"
+    text = slug.replace("-", " ").replace("_", " ").strip()
+    return text[:1].upper() + text[1:]
+
+
 def alert_content(plan: AlertPlan) -> str:
     """Short text line sent with the embed: phones only push for message text, not embeds."""
     event = plan.event
     emoji, label, _ = style(event)
     price = format_cents(event.price_cents, event.currency) if event.price_cents else None
-    parts = [f"{emoji} **{label}**", event.sku or event.product_name or "item"]
+    parts = [f"{emoji} **{label}**", item_name(event.sku, event.product_name)]
     if price:
         parts.append(price)
     if event.region and event.region != "us":
@@ -109,7 +136,7 @@ def alert_embed(event: RadarEvent) -> discord.Embed:
     store = source_name(event.source)
     if event.region:
         store += f" · {event.region.upper()}"
-    embed.set_footer(text=f"{store} · {event.category or 'uncategorized'}")
+    embed.set_footer(text=f"{store} · {category_name(event.category)}")
     return embed
 
 
@@ -118,7 +145,7 @@ def digest_embed(events: Sequence[RadarEvent], *, limit: int = 25) -> discord.Em
     lines = []
     for event in events[:limit]:
         emoji, label, _ = style(event)
-        name = event.sku or event.product_name or "item"
+        name = item_name(event.sku, event.product_name)
         detail = (
             f"{event.old_value or '—'} → {event.new_value or '—'}"
             if event.kind in (EventKind.PRICE_CHANGE, EventKind.RESTOCK_ETA)

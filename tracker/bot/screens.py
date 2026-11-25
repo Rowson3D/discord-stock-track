@@ -22,12 +22,21 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import discord
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from tracker.alerts import AlertPlan
 from tracker.audit import audit, describe, recent_audit
 from tracker.bot.cleanup import cleanup_messages
-from tracker.bot.embeds import KIND_STYLE, alert_content, alert_embed, source_name, status_text
+from tracker.bot.embeds import (
+    KIND_STYLE,
+    alert_content,
+    alert_embed,
+    category_name,
+    item_name,
+    source_name,
+    status_text,
+)
+from tracker.bot.embeds import style as event_style
 from tracker.bot.render import (
     history_lines,
     opportunity_line,
@@ -37,7 +46,7 @@ from tracker.bot.render import (
     value_embed,
 )
 from tracker.bot.views import everything_text, watch_test_embed, watches_embed
-from tracker.db.models import Listing, Product, Valuation, Variant, Watch
+from tracker.db.models import Listing, Product, StockObservation, Valuation, Variant, Watch
 from tracker.domain import EventKind, SourceKey, StockStatus, format_cents
 from tracker.guilds import ADMIN_FIELDS, GuildConfig, GuildStatus, config_for, list_guilds
 from tracker.guilds import update_config as save_config
@@ -391,6 +400,27 @@ def _place(listing: Listing) -> str:
     return f"{source_name(listing.source)} {listing.region.upper()}"
 
 
+def _name(row: Any) -> str:
+    """A row's product as a list shows it (see item_name)."""
+    return item_name(row.variant.sku, row.product.name)
+
+
+_STATUS_ORDER = {
+    StockStatus.IN_STOCK: 0,
+    StockStatus.LOW_STOCK: 0,
+    StockStatus.COMING_SOON: 1,
+    StockStatus.OUT_OF_STOCK: 2,
+    StockStatus.UNKNOWN: 3,
+}
+
+
+def by_status(rows: list[Any]) -> list[Any]:
+    """In stock first, then coming soon, sold out, and unknown; by name within each."""
+    return sorted(
+        rows, key=lambda r: (_STATUS_ORDER.get(StockStatus(r.listing.status), 3), _name(r).lower())
+    )
+
+
 def _status_emoji(status: str) -> str:
     return status_text(StockStatus(status)).split(" ")[0]
 
@@ -416,28 +446,34 @@ async def stock_embed(ctx: TrackerContext, rows: list[ListingRow]) -> discord.Em
     async with ctx.sessions() as session:
         histories = {r.listing.id: await stock_history(session, r.listing.id) for r in rows[:20]}
         history = await recent_observations(session, first.listing.id, limit=6)
+        ranges = await price_ranges(session, [r.listing.id for r in rows[:20]], now)
     for row in rows[:20]:
         listing = row.listing
         lines = [
             status_text(StockStatus(listing.status))
             + f" · {format_cents(listing.price_cents, listing.currency)}"
         ]
+        if note := price_note(listing, ranges.get(listing.id)):
+            lines.append(note)
         lines.extend(history_lines(listing, histories[listing.id], now))
         if listing.restock_eta and listing.status != StockStatus.IN_STOCK:
             lines.append(f"Restock ETA {listing.restock_eta.isoformat()}")
         if listing.is_early_access:
             lines.append("⚡ Early Access")
-        lines.append(
-            f"In stock {ts(listing.last_in_stock_at)} · checked {ts(listing.last_checked_at)}"
+        seen = (
+            f"In stock {ts(listing.last_in_stock_at)}"
+            if listing.last_in_stock_at
+            else "Never seen in stock"
         )
+        lines.append(f"{seen} · checked {ts(listing.last_checked_at)}")
         embed.add_field(
-            name=f"{row.variant.sku} · {_place(listing)}"[:256],
+            name=_place(listing)[:256],
             value="\n".join(lines),
             inline=False,
         )
     if history:
         embed.add_field(
-            name=f"Recent changes ({first.variant.sku} {first.listing.region.upper()})",
+            name=f"Recent changes · {_place(first.listing)}",
             value="\n".join(
                 f"{ts(o.observed_at, 'd')} {status_text(StockStatus(o.status))} · "
                 f"{format_cents(o.price_cents, first.listing.currency)}"
@@ -445,8 +481,49 @@ async def stock_embed(ctx: TrackerContext, rows: list[ListingRow]) -> discord.Em
             ),
             inline=False,
         )
-    embed.set_footer(text=f"{first.product.category or 'uncategorized'} · {first.product.brand}")
+    product = first.product
+    embed.set_footer(
+        text=f"{first.variant.sku} · {category_name(product.category)} · {product.brand}"
+    )
     return embed
+
+
+PRICE_DAYS = 90
+
+
+async def price_ranges(
+    session: Any, listing_ids: list[int], now: datetime
+) -> dict[int, tuple[int, int]]:
+    """Lowest and highest recorded price per listing over the last PRICE_DAYS days."""
+    if not listing_ids:
+        return {}
+    rows = await session.execute(
+        select(
+            StockObservation.listing_id,
+            func.min(StockObservation.price_cents),
+            func.max(StockObservation.price_cents),
+        )
+        .where(
+            StockObservation.listing_id.in_(listing_ids),
+            StockObservation.observed_at >= now - timedelta(days=PRICE_DAYS),
+            StockObservation.price_cents.is_not(None),
+        )
+        .group_by(StockObservation.listing_id)
+    )
+    return {listing_id: (low, high) for listing_id, low, high in rows.all()}
+
+
+def price_note(listing: Listing, price_range: tuple[int, int] | None) -> str | None:
+    """'Lowest in 90 days' when it's a real low, or what the low was when it isn't."""
+    price = listing.price_cents
+    if price is None or price_range is None:
+        return None
+    low, high = price_range
+    if price <= low and high > price:
+        return f"📉 Lowest price in {PRICE_DAYS} days"
+    if low < price:
+        return f"Was {format_cents(low, listing.currency)} at its lowest ({PRICE_DAYS} days)"
+    return None
 
 
 async def profit_embed(ctx: TrackerContext, variant_id: int, *, refresh: bool) -> discord.Embed:
@@ -481,16 +558,41 @@ async def check_now(ctx: TrackerContext, rows: list[ListingRow]) -> None:
     await ctx.dispatcher.dispatch()
 
 
-def event_line(event: RadarEvent) -> str:
-    emoji, label, _ = KIND_STYLE.get(event.kind, ("•", event.kind.value, 0))
-    name = f"[{event.sku}]({event.url})" if event.url else (event.sku or "?")
+def event_line(event: RadarEvent, repeats: int = 1) -> str:
+    emoji, label, _ = event_style(event)
+    title = item_name(event.sku, event.product_name)
+    name = f"[{title}]({event.url})" if event.url else title
     where = f" {event.region.upper()}" if event.region else ""
     change = (
         f" · {event.old_value or '—'} → {event.new_value or '—'}"
         if event.kind in (EventKind.PRICE_CHANGE, EventKind.RESTOCK_ETA)
         else ""
     )
-    return f"{ts(event.occurred_at)} {emoji} {label} · {name}{where}{change}"
+    more = f" · {repeats} changes" if repeats > 1 else ""
+    return f"{ts(event.occurred_at)} {emoji} {label} · {name}{where}{change}{more}"
+
+
+_IN_AND_OUT = frozenset({EventKind.BACK_IN_STOCK, EventKind.SOLD_OUT, EventKind.STATUS_CHANGE})
+
+
+def collapse(events: list[RadarEvent]) -> list[tuple[RadarEvent, int]]:
+    """Newest first, one line per listing for in/out flapping and for repeats of one change."""
+    lines: list[tuple[RadarEvent, int]] = []
+    index: dict[tuple[Any, ...], int] = {}
+    for event in events:
+        family = (
+            ("stock",)
+            if event.kind in _IN_AND_OUT
+            else (event.kind, event.old_value, event.new_value)
+        )
+        key = (event.listing_id if event.listing_id is not None else -event.id, *family)
+        if key in index:
+            first, count = lines[index[key]]
+            lines[index[key]] = (first, count + 1)
+        else:
+            index[key] = len(lines)
+            lines.append((event, 1))
+    return lines
 
 
 async def _variant_ids(ctx: TrackerContext, listing_ids: set[int]) -> dict[int, int]:
@@ -525,12 +627,12 @@ async def home_screen(v: Viewer, state: str = HOME) -> Screen:
     async with v.ctx.sessions() as session:
         rows = await watch_rows(session, v.user_id)
         subscription = await subscription_for(session, v.user_id, v.guild_id)
-        events = await load_events(session, pending_only=False, limit=5)
+        events = collapse(await load_events(session, pending_only=False, limit=60))[:5]
     buyable = [r for r in rows if StockStatus(r.listing.status).is_available]
     if rows:
         lines = [f"**Your watches:** {len(rows)} · {len(buyable)} in stock now"]
         lines += [
-            f"{_status_emoji(r.listing.status)} **{r.variant.sku}** {_place(r.listing)} · "
+            f"{_status_emoji(r.listing.status)} **{_name(r)}** {_place(r.listing)} · "
             f"{format_cents(r.listing.price_cents, r.listing.currency)}"
             for r in buyable[:5]
         ]
@@ -538,7 +640,7 @@ async def home_screen(v: Viewer, state: str = HOME) -> Screen:
         lines = ["**Your watches:** none yet. Find a product, then pick the stores to watch."]
     lines.append(f"**Ping me for every important alert:** {everything_text(subscription)}")
     if events:
-        lines += ["", "**Latest**", *(event_line(e) for e in events)]
+        lines += ["", "**Latest**", *(event_line(e, n) for e, n in events)]
     embed = discord.Embed(title="FlipScout", description="\n".join(lines)[:4000], color=BLUE)
     embed.set_footer(text=f"Only you can see this · {now:%H:%M} UTC")
     items: list[discord.ui.Item[Any]] = [
@@ -550,7 +652,7 @@ async def home_screen(v: Viewer, state: str = HOME) -> Screen:
     items += open_menu(
         "Open a watch that's in stock…",
         HOME,
-        [(r.variant.id, f"{r.variant.sku} · {_place(r.listing)}", r.product.name) for r in buyable],
+        [(r.variant.id, f"{_name(r)} · {_place(r.listing)}", r.product.name) for r in buyable],
         row=1,
     )
     return Screen(embed, items + nav_row(v, HOME, current=HOME))
@@ -578,7 +680,7 @@ def everything_menu(subscription: Watch | None, regions: list[str]) -> Nav:
 async def watches_screen(v: Viewer, state: str = WATCHES) -> Screen:
     now = datetime.now(UTC)
     async with v.ctx.sessions() as session:
-        rows = await watch_rows(session, v.user_id)
+        rows = by_status(await watch_rows(session, v.user_id))
         subscription = await subscription_for(session, v.user_id, v.guild_id)
     embed = watches_embed(rows, now, subscription)
     items: list[discord.ui.Item[Any]] = []
@@ -591,7 +693,7 @@ async def watches_screen(v: Viewer, state: str = WATCHES) -> Screen:
         [
             (
                 r.variant.id,
-                f"{r.variant.sku} · {_place(r.listing)}",
+                f"{_name(r)} · {_place(r.listing)}",
                 f"{status_text(StockStatus(r.listing.status))} · {r.product.name}",
             )
             for r in rows
@@ -647,16 +749,21 @@ async def flips_screen(v: Viewer, state: str = FLIPS) -> Screen:
     else:
         description = "No flips yet. eBay isn't set up (EBAY_CLIENT_ID / EBAY_CLIENT_SECRET)."
     embed = discord.Embed(title="Flips", description=description, color=GOLD)
+    costs = [
+        f"{settings.fee_rate:.1%} + {format_cents(settings.fixed_fee_cents)} fees",
+        f"{format_cents(settings.outbound_shipping_cents)} shipping",
+    ]
+    if settings.purchase_tax_rate:
+        costs.append(f"{settings.purchase_tax_rate:.1%} tax")
     embed.set_footer(
-        text=f"Net after {settings.fee_rate:.1%} + {format_cents(settings.fixed_fee_cents)} "
-        f"fees, {format_cents(settings.outbound_shipping_cents)} shipping, "
-        f"{settings.purchase_tax_rate:.1%} tax · open one for the breakdown"
+        text=f"Ranked by profit and confidence · net after {', '.join(costs)} · "
+        "open one for the breakdown"
     )
     items = open_menu(
         "Open a flip…",
         state,
         [
-            (r.variant.id, f"{i}. {r.variant.sku}", f"{format_cents(r.valuation.flip_net_cents)} · "
+            (r.variant.id, f"{i}. {_name(r)}", f"{format_cents(r.valuation.flip_net_cents)} · "
              f"{r.product.name}")
             for i, r in enumerate(rows, start=1)
         ],
@@ -674,7 +781,10 @@ async def flips_screen(v: Viewer, state: str = FLIPS) -> Screen:
                 "fc",
                 state,
                 [option("Every category", "*", default=not category)]
-                + [option(c, c, default=c == category) for c in categories[: _OPTIONS - 1]],
+                + [
+                    option(category_name(c), c, default=c == category)
+                    for c in categories[: _OPTIONS - 1]
+                ],
                 row=2,
             )
         )
@@ -694,32 +804,33 @@ async def radar_screen(v: Viewer, state: str = RADAR) -> Screen:
             rows = await upcoming_restocks(session, datetime.now(UTC).date(), 30)
         rows = [r for r in rows if not region or r.listing.region == region]
         lines = [
-            f"`{r.listing.restock_eta}` **{r.variant.sku}** {r.listing.region.upper()} · "
+            f"`{r.listing.restock_eta}` **{_name(r)}** {r.listing.region.upper()} · "
             f"{format_cents(r.listing.price_cents, r.listing.currency)}"
             for r in rows
         ]
         title = f"Radar · announced restocks, next 30 days ({len(rows)})"
         empty = "No restock dates announced."
         products = [
-            (r.variant.id, f"{r.variant.sku} · {r.listing.region.upper()}", r.product.name)
-            for r in rows
+            (r.variant.id, f"{_name(r)} · {r.listing.region.upper()}", r.product.name) for r in rows
         ]
     else:
         async with v.ctx.sessions() as session:
-            events = await load_events(
-                session,
-                pending_only=False,
-                limit=200 if region else 15,
-                kinds=[kind] if kind else None,
+            loaded = await load_events(
+                session, pending_only=False, limit=200, kinds=[kind] if kind else None
             )
-        events = [e for e in events if not region or (e.region or "") == region][:15]
-        lines = [event_line(e) for e in events]
+        grouped = collapse([e for e in loaded if not region or (e.region or "") == region])[:15]
+        events = [e for e, _ in grouped]
+        lines = [event_line(e, n) for e, n in grouped]
         label = KIND_STYLE[EventKind(kind)][1] if kind in EventKind else "Everything"
         title = f"Radar · {label}"
         empty = "Nothing on the radar yet."
         variants = await _variant_ids(v.ctx, {e.listing_id for e in events if e.listing_id})
         products = [
-            (variants[e.listing_id], f"{e.sku or '?'} · {(e.region or '').upper()}", e.product_name)
+            (
+                variants[e.listing_id],
+                f"{item_name(e.sku, e.product_name)} · {(e.region or '').upper()}",
+                e.product_name,
+            )
             for e in events
             if e.listing_id in variants
         ]
@@ -789,6 +900,15 @@ async def product_screen(v: Viewer, state: str) -> Screen:
         return Screen(embed, nav_row(v, tab_of(back), back))
     now = datetime.now(UTC)
     watches = await _my_watches(v, [r.listing.id for r in rows])
+    regions = list(v.ctx.settings.unifi.regions)
+    rows.sort(
+        key=lambda r: (
+            r.listing.id not in watches,
+            not StockStatus(r.listing.status).is_available,
+            regions.index(r.listing.region) if r.listing.region in regions else len(regions),
+            r.listing.source,
+        )
+    )
     embed = await stock_embed(v.ctx, rows)
     embed.description = watch_summary(rows, watches, now)
     shown = rows[:_OPTIONS]
@@ -902,7 +1022,7 @@ async def server_screen(v: Viewer, state: str = "server") -> Screen:
         name="Radar channel",
         value=_channel(g.radar_channel_id) + ("" if g.radar_channel_id else " (uses alerts)"),
     )
-    embed.add_field(name="Pings", value=g.alert_mention or "—")
+    embed.add_field(name="Pings", value=g.alert_mention or "No role")
     embed.add_field(
         name="Pings for",
         value=", ".join(sorted(_kind_label(k) for k in g.mention_kinds)) or "—",

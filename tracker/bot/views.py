@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 import discord
 
-from tracker.bot.embeds import source_name, status_text
+from tracker.bot.embeds import item_name, source_name, status_text
 from tracker.db.models import Watch
 from tracker.domain import StockStatus, format_cents
 from tracker.guilds import config_for
@@ -100,7 +100,7 @@ def _aware(value: datetime) -> datetime:
 def watch_line(row: WatchRow, now: datetime) -> str:
     listing, watch = row.listing, row.watch
     parts = [
-        f"**{row.variant.sku}**",
+        f"**{item_name(row.variant.sku, row.product.name)}**",
         f"{source_name(listing.source)} {listing.region.upper()}",
         status_text(StockStatus(listing.status)),
         format_cents(listing.price_cents, listing.currency),

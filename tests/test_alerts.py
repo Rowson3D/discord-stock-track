@@ -242,7 +242,7 @@ def test_embed_rendering_for_restock_eta_and_digest():
     assert fields["SKU"] == "UX7-3 (3-pack)"
     assert fields["Price"] == "CA$559.00"
     assert fields["Change"] == "— → 2026-12-01"
-    assert embed.footer.text == "Ubiquiti Store · CA · wifi-whole-home-wifi"
+    assert embed.footer.text == "Ubiquiti Store · CA · Wifi whole home wifi"
     from tracker.alerts import AlertPlan
 
     assert alert_content(AlertPlan(event, False, None)) == (

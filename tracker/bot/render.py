@@ -6,7 +6,7 @@ from datetime import datetime
 
 import discord
 
-from tracker.bot.embeds import source_name, status_text
+from tracker.bot.embeds import item_name, source_name, status_text
 from tracker.db.models import Listing, MarketComp, Product, Valuation, Variant
 from tracker.domain import StockStatus, format_cents
 from tracker.history import EbayTrend, StockHistory, humanize
@@ -26,7 +26,7 @@ def ts(value: datetime | None, style: str = "R") -> str:
 def row_line(row: ListingRow) -> str:
     listing = row.listing
     parts = [
-        f"**{row.variant.sku}**",
+        f"**{item_name(row.variant.sku, row.product.name)}**",
         f"{source_name(listing.source)} {listing.region.upper()}",
         status_text(StockStatus(listing.status)),
         format_cents(listing.price_cents, listing.currency),
@@ -147,11 +147,12 @@ def opportunity_line(rank: int, row: OpportunityRow) -> str:
     pack = f" ×{row.variant.pack_size}" if row.variant.pack_size > 1 else ""
     roi = f"{v.flip_roi:.0%}" if v.flip_roi is not None else "—"
     resale = v.scarcity_resale_cents if v.flip_basis == "scarcity" else v.resale_cents
-    evidence = f"sold-out ×{v.scarcity_days}d" if v.flip_basis == "scarcity" else v.flip_basis
+    evidence = f"sold out {v.scarcity_days}d" if v.flip_basis == "scarcity" else v.flip_basis
+    name = item_name(row.variant.sku, row.product.name)
     return (
-        f"`{rank:>2}` {status} **{row.variant.sku}**{pack} · buy {format_cents(v.retail_cents)} "
+        f"`{rank:>2}` {status} **{name}**{pack} · buy {format_cents(v.retail_cents)} "
         f"→ ~{format_cents(resale)} · **{format_cents(v.flip_net_cents)}** ({roi}) · "
-        f"{evidence} · {v.flip_confidence}"
+        f"{evidence} · {v.flip_confidence} confidence"
     )
 
 
@@ -165,7 +166,9 @@ def value_embed(
     live: list[tuple[EbayItem, MatchResult]] | None = None,
     trend: EbayTrend | None = None,
 ) -> discord.Embed:
-    title = f"💰 {variant.sku}" + (f" · {product.name}" if product else "")
+    name = product.name if product else None
+    label = item_name(variant.sku, name, 256)
+    title = f"💰 {label}" + (f" · {name}" if name and label != name else "")
     embed = discord.Embed(title=title[:256], color=0xF1C40F)
     if valuation is None or valuation.basis is None:
         embed.description = (
