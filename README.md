@@ -140,6 +140,8 @@ Flips ── Open a flip ─────────────────┤ 
 Radar ── Open a product ──────────────┴──▶ Product ─ Profit (◀ Back to the product)
 ```
 
+The full map of every screen and button is [docs/navigation.svg](docs/navigation.svg).
+
 - **The bottom row** is always the same: **◀ Back** (to the list you came from, with its
   filters), then **Home**, **Watches**, **Flips**, **Radar**. The section you're in is
   highlighted.

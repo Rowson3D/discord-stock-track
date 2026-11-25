@@ -1,0 +1,181 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="1010" viewBox="0 0 1240 1010" role="img" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif">
+  <title>FlipScout bot navigation</title>
+  <desc>Every screen of the FlipScout Discord bot, how you get to it, and what is on it. Two commands and the Details button on public alerts open a private message; every button and menu then changes that same message.</desc>
+  <style>
+    .bg { fill: #FBFAF7; }
+    .screen { fill: #EEF3F9; stroke: #4A76A8; stroke-width: 1; }
+    .admin { fill: #FBF2E2; stroke: #A86F1A; stroke-width: 1; }
+    .owner { fill: #F9E9E3; stroke: #A9462A; stroke-width: 1; }
+    .danger { fill: #FBEBEB; stroke: #B03A3A; stroke-width: 1; }
+    .entry { fill: #1F2733; }
+    .band { fill: none; stroke: #8A93A0; stroke-width: 1; stroke-dasharray: 5 4; }
+    .title { font-size: 15px; font-weight: 600; fill: #1F2733; }
+    .sub { font-size: 12.5px; fill: #5B6573; }
+    .ctl { font-size: 13px; fill: #1F2733; }
+    .tag { font-size: 12px; fill: #6B7380; }
+    .pill { font-size: 14px; font-weight: 600; fill: #FFFFFF; }
+    .link { fill: none; stroke: #39424E; stroke-width: 1.4; }
+    .adminlink { fill: none; stroke: #A86F1A; stroke-width: 1.4; }
+    .back { fill: none; stroke: #39424E; stroke-width: 1.2; stroke-dasharray: 4 3; }
+    .head { font-size: 20px; font-weight: 600; fill: #1F2733; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1240" height="1010"/>
+
+  <!-- ways in -->
+  <rect class="entry" x="90" y="22" width="200" height="38" rx="19"/>
+  <text class="pill" x="190" y="46" text-anchor="middle">/flipscout</text>
+  <rect class="entry" x="505" y="22" width="200" height="38" rx="19"/>
+  <text class="pill" x="605" y="46" text-anchor="middle">/stock product</text>
+  <rect class="entry" x="760" y="22" width="230" height="38" rx="19"/>
+  <text class="pill" x="875" y="46" text-anchor="middle">Public alert → Details</text>
+
+  <line class="link" x1="190" y1="60" x2="190" y2="98" marker-end="url(#arrow)"/>
+  <line class="link" x1="605" y1="60" x2="605" y2="98" marker-end="url(#arrow)"/>
+  <line class="link" x1="820" y1="60" x2="742" y2="98" marker-end="url(#arrow)"/>
+
+  <!-- Home → Server settings (admins) -->
+  <path class="adminlink" d="M300 100 V82 H1030 V98" marker-end="url(#arrow)"/>
+
+  <!-- column 1: the four sections -->
+  <rect class="screen" x="40" y="100" width="320" height="150" rx="6"/>
+  <text class="title" x="56" y="124">Home</text>
+  <text class="sub" x="56" y="146">Your watches in stock now, latest changes</text>
+  <text class="ctl" x="56" y="172">Find a product…</text>
+  <text class="ctl" x="56" y="194">About and privacy</text>
+  <text class="ctl" x="56" y="216">Server settings <tspan class="tag">(admins)</tspan></text>
+  <text class="ctl" x="56" y="238">▾ Open a watch that's in stock</text>
+
+  <rect class="screen" x="40" y="280" width="320" height="130" rx="6"/>
+  <text class="title" x="56" y="304">Watches</text>
+  <text class="sub" x="56" y="326">Everything you watch</text>
+  <text class="ctl" x="56" y="352">▾ Ping me for everything: off · all · US</text>
+  <text class="ctl" x="56" y="374">▾ Open a watch</text>
+  <text class="ctl" x="56" y="396">Mute all 24h · Unmute all</text>
+
+  <rect class="screen" x="40" y="440" width="320" height="130" rx="6"/>
+  <text class="title" x="56" y="464">Flips</text>
+  <text class="sub" x="56" y="486">Only where valuations are shown</text>
+  <text class="ctl" x="56" y="512">▾ Show: buyable now, minimum profit</text>
+  <text class="ctl" x="56" y="534">▾ Category</text>
+  <text class="ctl" x="56" y="556">▾ Open a flip</text>
+
+  <rect class="screen" x="40" y="600" width="320" height="130" rx="6"/>
+  <text class="title" x="56" y="624">Radar</text>
+  <text class="sub" x="56" y="646">What just changed</text>
+  <text class="ctl" x="56" y="672">▾ What to show (incl. upcoming restocks)</text>
+  <text class="ctl" x="56" y="694">▾ Region</text>
+  <text class="ctl" x="56" y="716">▾ Open a product</text>
+
+  <!-- every list opens a product -->
+  <path class="link" d="M360 180 H400 M360 330 H400 M360 500 H400 M360 660 H400 M400 180 V660"/>
+  <line class="link" x1="400" y1="215" x2="438" y2="215" marker-end="url(#arrow)"/>
+
+  <!-- column 2: a product -->
+  <rect class="screen" x="440" y="100" width="340" height="226" rx="6"/>
+  <text class="title" x="456" y="124">Product</text>
+  <text class="sub" x="456" y="146">Stock and history for every store</text>
+  <text class="ctl" x="456" y="172">▾ Watch: pick stores</text>
+  <text class="ctl" x="456" y="194">Open at store ↗</text>
+  <text class="ctl" x="456" y="216">Profit <tspan class="tag">(where valuations are shown)</tspan></text>
+  <text class="ctl" x="456" y="238">Check now <tspan class="tag">(admins)</tspan></text>
+  <text class="ctl" x="456" y="260">Target price… · Mute 24h <tspan class="tag">(when watching)</tspan></text>
+  <text class="ctl" x="456" y="282">Send a test alert <tspan class="tag">(when watching)</tspan></text>
+  <text class="ctl" x="456" y="304">Record a sale… <tspan class="tag">(owner)</tspan></text>
+
+  <line class="link" x1="560" y1="326" x2="560" y2="364" marker-end="url(#arrow)"/>
+  <line class="back" x1="680" y1="366" x2="680" y2="328" marker-end="url(#arrow)"/>
+
+  <rect class="screen" x="440" y="366" width="340" height="128" rx="6"/>
+  <text class="title" x="456" y="390">Profit</text>
+  <text class="sub" x="456" y="412">Resale, fees, net, eBay trend</text>
+  <text class="ctl" x="456" y="438">Refresh from eBay <tspan class="tag">(owner)</tspan></text>
+  <text class="ctl" x="456" y="460">Record a sale… <tspan class="tag">(owner)</tspan></text>
+  <text class="ctl" x="456" y="482">◀ Back to the product</text>
+
+  <path class="link" d="M780 282 H820 V574 H782" marker-end="url(#arrow)"/>
+
+  <rect class="screen" x="440" y="530" width="340" height="88" rx="6"/>
+  <text class="title" x="456" y="554">Test alert sent</text>
+  <text class="sub" x="456" y="576">What this watch pings you for, and why</text>
+  <text class="ctl" x="456" y="602">◀ Back to the product</text>
+
+  <!-- column 3: server settings -->
+  <rect class="admin" x="860" y="100" width="340" height="180" rx="6"/>
+  <text class="title" x="876" y="124">Server settings <tspan class="tag">(admins)</tspan></text>
+  <text class="sub" x="876" y="146">Saves as soon as you pick</text>
+  <text class="ctl" x="876" y="172">▾ Alerts channel</text>
+  <text class="ctl" x="876" y="194">▾ Radar channel</text>
+  <text class="ctl" x="876" y="216">▾ Role to ping</text>
+  <text class="ctl" x="876" y="238">▾ Ping for (alert types)</text>
+  <text class="ctl" x="876" y="260">Timing… · More settings and tools</text>
+
+  <line class="adminlink" x1="1030" y1="280" x2="1030" y2="318" marker-end="url(#arrow)"/>
+
+  <rect class="admin" x="860" y="320" width="340" height="180" rx="6"/>
+  <text class="title" x="876" y="344">More settings and tools</text>
+  <text class="sub" x="876" y="366">This server</text>
+  <text class="ctl" x="876" y="392">▾ Admin role</text>
+  <text class="ctl" x="876" y="414">Send a test alert here</text>
+  <text class="ctl" x="876" y="436">Delete old bot messages</text>
+  <text class="ctl" x="876" y="458">Health · Audit log</text>
+  <text class="ctl" x="876" y="480">Valuations · eBay scan… <tspan class="tag">(owner)</tspan></text>
+
+  <line class="adminlink" x1="940" y1="500" x2="940" y2="538" marker-end="url(#arrow)"/>
+  <path class="adminlink" d="M860 470 H845 V650 H858" marker-end="url(#arrow)"/>
+  <line class="adminlink" x1="1120" y1="500" x2="1120" y2="538" marker-end="url(#arrow)"/>
+
+  <rect class="admin" x="860" y="540" width="160" height="60" rx="6"/>
+  <text class="title" x="876" y="564">Health</text>
+  <text class="sub" x="876" y="586">Stores and jobs</text>
+
+  <rect class="admin" x="860" y="620" width="160" height="60" rx="6"/>
+  <text class="title" x="876" y="644">Audit log</text>
+  <text class="sub" x="876" y="666">Admin actions</text>
+
+  <rect class="owner" x="1040" y="540" width="160" height="140" rx="6"/>
+  <text class="title" x="1056" y="564">Servers</text>
+  <text class="sub" x="1056" y="586">Owner only</text>
+  <text class="ctl" x="1056" y="612">▾ Choose a server</text>
+  <text class="ctl" x="1056" y="634">Approve · Block…</text>
+  <text class="ctl" x="1056" y="656">Yes, block · Cancel</text>
+
+  <!-- Home → About -->
+  <path class="link" d="M40 194 H24 V823 H38" marker-end="url(#arrow)"/>
+
+  <rect class="screen" x="40" y="770" width="320" height="90" rx="6"/>
+  <text class="title" x="56" y="794">About and privacy</text>
+  <text class="sub" x="56" y="816">What's stored about you</text>
+  <text class="ctl" x="56" y="842">Delete my data</text>
+
+  <line class="link" x1="360" y1="815" x2="438" y2="815" marker-end="url(#arrow)"/>
+  <line class="back" x1="440" y1="845" x2="362" y2="845" marker-end="url(#arrow)"/>
+
+  <rect class="danger" x="440" y="770" width="340" height="90" rx="6"/>
+  <text class="title" x="456" y="794">Delete your data?</text>
+  <text class="sub" x="456" y="816">Every server. Can't be undone.</text>
+  <text class="ctl" x="456" y="842">Yes, delete everything · Cancel</text>
+
+  <!-- the row under every screen -->
+  <rect class="band" x="40" y="890" width="1160" height="56" rx="6"/>
+  <text class="ctl" x="56" y="913"><tspan font-weight="600">Bottom row on every screen:</tspan> ◀ Back (to the list you came from, filters kept) · Home · Watches · Flips · Radar</text>
+  <text class="sub" x="56" y="934">The section you're in is highlighted. Every screen is one private message that changes in place; buttons never expire.</text>
+
+  <!-- legend -->
+  <rect class="screen" x="40" y="966" width="14" height="14" rx="3"/>
+  <text class="sub" x="60" y="978">Everyone</text>
+  <rect class="admin" x="140" y="966" width="14" height="14" rx="3"/>
+  <text class="sub" x="160" y="978">Server admins</text>
+  <rect class="owner" x="270" y="966" width="14" height="14" rx="3"/>
+  <text class="sub" x="290" y="978">Owner</text>
+  <line class="link" x1="360" y1="973" x2="396" y2="973" marker-end="url(#arrow)"/>
+  <text class="sub" x="404" y="978">opens</text>
+  <line class="back" x1="460" y1="973" x2="496" y2="973" marker-end="url(#arrow)"/>
+  <text class="sub" x="504" y="978">back</text>
+  <text class="sub" x="560" y="978">▾ menu · … opens a form · ↗ opens the store</text>
+</svg>
