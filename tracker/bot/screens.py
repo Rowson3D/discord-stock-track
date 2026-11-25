@@ -445,7 +445,7 @@ async def stock_embed(ctx: TrackerContext, rows: list[ListingRow]) -> discord.Em
     now = datetime.now(UTC)
     async with ctx.sessions() as session:
         histories = {r.listing.id: await stock_history(session, r.listing.id) for r in rows[:20]}
-        history = await recent_observations(session, first.listing.id, limit=6)
+        history = await recent_observations(session, first.listing.id, limit=30)
         ranges = await price_ranges(session, [r.listing.id for r in rows[:20]], now)
     for row in rows[:20]:
         listing = row.listing
@@ -471,14 +471,20 @@ async def stock_embed(ctx: TrackerContext, rows: list[ListingRow]) -> discord.Em
             value="\n".join(lines),
             inline=False,
         )
-    if history:
+    # Oldest first, keeping a row only when what it shows changed (quantity or ETA changes look
+    # identical here), so each line is when that state began.
+    changes: list[str] = []
+    previous = None
+    for o in reversed(history):
+        price = format_cents(o.price_cents, first.listing.currency)
+        shown = f"{status_text(StockStatus(o.status))} · {price}"
+        if shown != previous:
+            changes.append(f"{ts(o.observed_at)} {shown}")
+        previous = shown
+    if changes:
         embed.add_field(
             name=f"Recent changes · {_place(first.listing)}",
-            value="\n".join(
-                f"{ts(o.observed_at, 'd')} {status_text(StockStatus(o.status))} · "
-                f"{format_cents(o.price_cents, first.listing.currency)}"
-                for o in history
-            ),
+            value="\n".join(reversed(changes[-6:])),
             inline=False,
         )
     product = first.product
@@ -891,6 +897,12 @@ def watch_summary(rows: list[ListingRow], watches: dict[int, Watch], now: dateti
     return " · ".join(parts)
 
 
+def _watching_label(count: int) -> str:
+    if not count:
+        return "Watch: pick stores…"
+    return f"Watching {count} store{'' if count == 1 else 's'}: change…"
+
+
 async def product_screen(v: Viewer, state: str) -> Screen:
     variant_id, back = split_product(state)
     async with v.ctx.sessions() as session:
@@ -914,7 +926,7 @@ async def product_screen(v: Viewer, state: str) -> Screen:
     shown = rows[:_OPTIONS]
     items: list[discord.ui.Item[Any]] = [
         menu(
-            f"Watching {len(watches)} store(s): change…" if watches else "Watch: pick stores…",
+            _watching_label(len(watches)),
             "wsel",
             state,
             [
