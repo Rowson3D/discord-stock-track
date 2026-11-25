@@ -13,11 +13,10 @@ from tests.conftest import T0
 from tests.test_alerts import ALERTS, RADAR, _history, discord_settings
 from tests.test_panel import WRITE, Clock, audit_actions, login, make_client, panel_settings
 from tracker.bot.sink import sample_alert_message, send_test_alert
-from tracker.bot.views import WatchManager, watch_test_embed
+from tracker.bot.views import watch_test_embed
 from tracker.db.models import Guild, Listing, Watch
 from tracker.domain import EventKind
 from tracker.settings import Settings, SmsSettings
-from tracker.watching import user_watch_rows
 from tracker.watchtest import SampleAlertError, WatchTest, plan_watch_test
 
 OWNER = "123456789012345670"
@@ -295,46 +294,6 @@ class Followup:
 
     async def send(self, content: str | None = None, **kwargs: Any) -> None:
         self.sent.append({"content": content, **kwargs})
-
-
-class DeferResponse:
-    async def defer(self, **kwargs: Any) -> None:
-        return None
-
-
-async def test_watch_manager_test_button(sessions):
-    watch_id = await add_watch(sessions)
-    async with sessions() as session:
-        rows = await user_watch_rows(session, OWNER)
-    poster = FakePoster()
-    bot = SimpleNamespace(
-        ctx=SimpleNamespace(sessions=sessions, settings=settings()),
-        post_test_alert=poster.post_test_alert,
-    )
-    view = WatchManager(bot, OWNER, rows)  # type: ignore[arg-type]
-    assert "Test" in [getattr(item, "label", None) for item in view.children]
-    view.selected = [watch_id]
-    me = SimpleNamespace(
-        user=SimpleNamespace(id=int(OWNER), __str__=lambda self: "owner"),
-        guild_id=None,
-        response=DeferResponse(),
-        followup=Followup(),
-    )
-    await view.apply(me, "test")  # type: ignore[arg-type]
-    [reply] = me.followup.sent
-    assert reply["ephemeral"] is True
-    embed = reply["embed"]
-    assert "Sent a sample **Back in stock** alert" in embed.description
-    assert f"✅ **Back in stock**: pings you in <#{ALERTS}>" in embed.description
-    assert f"➖ **Sold out**: posts in <#{RADAR}>, no ping" in embed.description
-    assert len(poster.tests) == 1
-    assert "watch.test" in await audit_actions(sessions)
-
-    failing = FakePoster("The bot can't post in the alert channel (Missing Access).")
-    bot.post_test_alert = failing.post_test_alert
-    me.followup = Followup()
-    await view.apply(me, "test")  # type: ignore[arg-type]
-    assert "Couldn't send" in me.followup.sent[0]["embed"].description
 
 
 def test_watch_test_embed_without_a_message():

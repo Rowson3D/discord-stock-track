@@ -12,6 +12,7 @@ from discord.ext import commands
 
 from tracker.audit import audit
 from tracker.bot.commands import TrackerCommands
+from tracker.bot.screens import Nav
 from tracker.bot.views import WatchButton
 from tracker.context import TrackerContext
 from tracker.guilds import (
@@ -89,7 +90,7 @@ class TrackerBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         await self.add_cog(TrackerCommands(self))
-        self.add_dynamic_items(WatchButton, GuildDecisionButton)
+        self.add_dynamic_items(WatchButton, Nav, GuildDecisionButton)
         if not self.owner_ids:
             info = await self.application_info()
             if info.team:

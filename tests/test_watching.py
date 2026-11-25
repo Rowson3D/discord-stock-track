@@ -12,7 +12,7 @@ from sqlalchemy import select
 from tests.conftest import T0
 from tests.test_alerts import _history, _pending, discord_settings
 from tracker.alerts import AlertRouter
-from tracker.bot.views import WatchManager, watch_line, watches_embed
+from tracker.bot.views import watch_line, watches_embed
 from tracker.db.models import Listing, Watch, WatchRule
 from tracker.domain import EventKind, StockStatus
 from tracker.guilds import GuildConfig
@@ -175,29 +175,10 @@ async def test_rules_ping_and_promote_to_alert_channel(sessions):
     assert sold_out.channel_id == 111
 
 
-# ── /watches manager ─────────────────────────────────────────────────────
+# ── watch text ────────────────────────────────────────────────────────────
 
 
-class FakeResponse:
-    def __init__(self) -> None:
-        self.edited: dict[str, Any] | None = None
-        self.sent: str | None = None
-
-    async def edit_message(self, **kwargs: Any) -> None:
-        self.edited = kwargs
-
-    async def send_message(self, content: str, **kwargs: Any) -> None:
-        self.sent = content
-
-    async def defer(self) -> None:
-        return None
-
-
-def interaction(user_id: str) -> SimpleNamespace:
-    return SimpleNamespace(user=SimpleNamespace(id=int(user_id)), response=FakeResponse())
-
-
-async def test_watch_manager_mutes_and_removes_only_own_watches(sessions):
+async def test_watch_lines_say_target_types_and_count(sessions):
     await _history(sessions, {})
     await _add(
         sessions,
@@ -210,52 +191,4 @@ async def test_watch_manager_mutes_and_removes_only_own_watches(sessions):
     assert "ping ≤ $150.00" in watch_line(rows[0], now)
     assert "alerts: Deal" in watch_line(rows[0], now)
     assert watches_embed(rows, now).title == "Your watches (1)"
-
-    bot = SimpleNamespace(ctx=SimpleNamespace(sessions=sessions))
-    view = WatchManager(bot, "7", rows)  # type: ignore[arg-type]
-    stranger = interaction("8")
-    assert not await view.interaction_check(stranger)  # type: ignore[arg-type]
-
-    me = interaction("7")
-    await view.apply(me, "mute")  # type: ignore[arg-type]
-    assert me.response.sent == "Pick one or more watches first."
-
-    view.selected = [rows[0].watch.id]
-    me = interaction("7")
-    await view.apply(me, "mute")  # type: ignore[arg-type]
-    assert "Muted for 24h 1" in me.response.edited["content"]
-    async with sessions() as session:
-        assert (await session.get(Watch, rows[0].watch.id)).muted_until is not None
-
-    me = interaction("7")
-    await view.apply(me, "remove")  # type: ignore[arg-type]
-    assert me.response.edited["content"] == "Removed 1 watch(es)."
-    assert "Nothing yet" in me.response.edited["embed"].description
-    async with sessions() as session:
-        owners = list(await session.scalars(select(Watch.discord_user_id)))
-    assert owners == ["8"]  # the other member's watch is untouched
-
-
-async def test_watches_switches_everything_alerts_by_region(sessions):
-    """/watches carries 'ping me for every important alert', limited to one region or off."""
-    bot = SimpleNamespace(ctx=SimpleNamespace(sessions=sessions))
-    view = WatchManager(bot, "7", [], guild_id="1", regions=["us", "ca"])  # type: ignore[arg-type]
-    labels = [o.label for o in view.children[0].options]  # type: ignore[attr-defined]
-    assert labels[:3] == [
-        "Every important alert: Off",
-        "Every important alert: Every region",
-        "Every important alert: US stores only",
-    ]
-
-    me = interaction("7")
-    await view.set_everything(me, "us")  # type: ignore[arg-type]
-    assert "every important alert:** US only" in me.response.edited["embed"].description
-    async with sessions() as session:
-        [sub] = list(await session.scalars(select(Watch).where(Watch.listing_id.is_(None))))
-    assert (sub.discord_user_id, sub.guild_id, sub.regions) == ("7", "1", "us")
-
-    me = interaction("7")
-    await view.set_everything(me, "off")  # type: ignore[arg-type]
-    assert "every important alert:** off" in me.response.edited["embed"].description
-    async with sessions() as session:
-        assert list(await session.scalars(select(Watch))) == []
+    assert "Nothing yet" in watches_embed([], now).description

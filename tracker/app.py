@@ -167,7 +167,7 @@ def add_market_jobs(scheduler: Scheduler, market: MarketService, settings: Setti
         )
         logger.info("eBay comp collection enabled (%s)", settings.ebay.marketplace)
     else:
-        logger.info("eBay not configured: valuations use manual comps only (/comp)")
+        logger.info("eBay not configured: valuations use manual comps only (Record a sale)")
     scheduler.add(
         "market:value",
         settings.market.valuation_interval_seconds,

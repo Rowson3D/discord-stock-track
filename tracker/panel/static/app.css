@@ -99,6 +99,8 @@ button.link.danger { color: var(--bad); }
 .main { padding: 24px 32px 48px; min-width: 0; }
 .topbar { display: flex; gap: 16px; align-items: flex-start; justify-content: space-between; margin-bottom: 24px; flex-wrap: wrap; }
 .main > div:last-child { max-width: 1240px; }
+.back { display: inline-block; margin-bottom: 4px; font-size: 13px; color: var(--muted); text-decoration: none; }
+.back:hover { color: var(--text); text-decoration: underline; }
 .search { position: relative; width: min(360px, 100%); }
 .search input { width: 100%; }
 .suggest {

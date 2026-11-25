@@ -184,7 +184,7 @@ async def test_sink_posts_alerts_with_buttons_and_mentions(sessions):
     assert alert["embed"].url == "https://store.ui.com/us/en/products/u7-pro"
     assert alert["allowed_mentions"].users is True
     labels = [getattr(item, "item", item).label for item in alert["view"].children]
-    assert labels == ["Open", "Watch"]
+    assert labels == ["Open", "Watch", "Details"]
 
 
 async def test_sink_digests_many_routine_events(sessions):

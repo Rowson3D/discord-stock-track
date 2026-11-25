@@ -352,6 +352,17 @@ percentile $226.84) nets about −$5 after fees and shipping, so not a flip at M
 - Fix found by the test: a watch set to Sold out or Restock date pinged you in the radar
   channel; anything a watch pings you for now goes to the alert channel, like rules.
 
+**2026-11-24: One private screen per person**
+- The bot is two commands, `/flipscout` (home) and `/stock` (a product), down from ten. Every
+  reply is one private message that buttons and menus change in place, with ◀ Back to the
+  list you came from and a fixed Home / Watches / Flips / Radar row.
+- Lists open their items; Flips and Radar filter with menus; a product's store menu replaces
+  `/watch` and `/watches` editing; settings save from channel, role and alert-type menus
+  instead of typed options; recording a sale and the eBay scan are forms.
+- Buttons carry their screen in the custom ID, so they never time out and survive restarts.
+- Panel: product and Discovery item pages link back to the list you came from, keep its
+  section highlighted, and let you watch each store from the product page.
+
 ## 5. Risks and open questions
 
 | Risk | Mitigation |

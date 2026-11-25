@@ -74,18 +74,10 @@ def test_role_resolution():
 @pytest.mark.parametrize(
     ("command", "role", "guild", "allowed"),
     [
-        ("watch", Role.MEMBER, approved(), True),
-        ("watch", Role.OWNER, None, False),  # DMs / unknown servers: nothing works
-        ("watch", Role.MEMBER, GuildConfig(guild_id="9", status=GuildStatus.PENDING), False),
-        ("status", Role.MEMBER, approved(), False),
-        ("status", Role.SERVER_ADMIN, approved(), True),
-        ("server configure", Role.SERVER_ADMIN, approved(), True),
-        ("server access", Role.SERVER_ADMIN, approved(), False),
-        ("server access", Role.OWNER, approved(), True),
-        ("comp", Role.SERVER_ADMIN, approved(), False),
-        ("flips", Role.MEMBER, approved(show_valuations=False), False),
-        ("flips", Role.MEMBER, approved(show_valuations=True), True),
-        ("flips", Role.OWNER, approved(show_valuations=False), True),
+        ("flipscout", Role.MEMBER, approved(), True),
+        ("stock", Role.MEMBER, approved(), True),
+        ("flipscout", Role.OWNER, None, False),  # DMs / unknown servers: nothing works
+        ("stock", Role.MEMBER, GuildConfig(guild_id="9", status=GuildStatus.PENDING), False),
         ("some-new-command", Role.SERVER_ADMIN, approved(), False),  # default: owner only
     ],
 )
@@ -353,15 +345,19 @@ async def test_interaction_check_gates_commands(sessions):
     ctx = SimpleNamespace(sessions=sessions, settings=SimpleNamespace(discord=discord()))
     cog = TrackerCommands(SimpleNamespace(ctx=ctx, owner_ids={"1"}))  # type: ignore[arg-type]
 
-    member = _interaction("status", int(HOME), 50)
-    assert not await cog.interaction_check(member)
-    assert "server admins" in member.response.messages[0]
+    member = _interaction("flipscout", int(HOME), 50)
+    assert await cog.interaction_check(member)
+    assert member.extras["role"] is Role.MEMBER
 
-    admin = _interaction("status", int(HOME), 51, manage=True)
+    admin = _interaction("flipscout", int(HOME), 51, manage=True)
     assert await cog.interaction_check(admin)
     assert admin.extras["role"] is Role.SERVER_ADMIN
 
-    stranger = _interaction("watch", 999, 1)  # even the owner can't use an unapproved server
+    unknown = _interaction("retired-command", int(HOME), 51, manage=True)
+    assert not await cog.interaction_check(unknown)
+    assert "the owner" in unknown.response.messages[0]
+
+    stranger = _interaction("stock", 999, 1)  # even the owner can't use an unapproved server
     assert not await cog.interaction_check(stranger)
     assert "isn't approved" in stranger.response.messages[0]
 

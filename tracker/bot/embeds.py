@@ -128,7 +128,7 @@ def digest_embed(events: Sequence[RadarEvent], *, limit: int = 25) -> discord.Em
         link = f"[{name}]({event.url})" if event.url else name
         lines.append(f"{emoji} {label} · {link}{region} · {detail}")
     if len(events) > limit:
-        lines.append(f"…and {len(events) - limit} more (see `/radar`)")
+        lines.append(f"…and {len(events) - limit} more (see Radar in `/flipscout`)")
     embed.description = "\n".join(lines)[:4096]
     embed.timestamp = events[-1].occurred_at if events else None
     return embed

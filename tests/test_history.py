@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tests.conftest import T0, make_snapshot
-from tracker.bot.commands import history_lines, trend_text
+from tracker.bot.render import history_lines, trend_text
 from tracker.db.models import EbayStatsHistory, Listing, Variant
 from tracker.domain import StockStatus
 from tracker.history import (

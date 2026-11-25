@@ -194,10 +194,24 @@ const NAV = [
 // Optional pages show only when their feature is on (learned from /api/overview).
 const features = { discovery: false };
 
-function shell(content, title, subtitle) {
-  const hash = location.hash || "#/";
+// The last list page you were on: detail pages link back to it and highlight its section.
+let cameFrom = "#/";
+
+function sectionOf(hash) {
+  const path = (hash || "#/").split("?")[0];
+  return NAV.find(([href]) => (href === "#/" ? path === "#/" || path === "" : path.startsWith(href))) || NAV[0];
+}
+
+function backLink(fallback) {
+  const target = cameFrom && cameFrom !== location.hash ? cameFrom : fallback;
+  return h("a", { class: "back", href: target }, `← ${sectionOf(target)[1]}`);
+}
+
+function shell(content, title, subtitle, { back = null } = {}) {
+  const hash = back ? back.getAttribute("href") : location.hash || "#/";
+  const here = sectionOf(hash)[0];
   const nav = h("nav", { class: "nav" }, NAV.filter(([, , feature]) => !feature || features[feature]).map(([href, label]) => {
-    const active = href === "#/" ? hash === "#/" || hash === "" : hash.startsWith(href);
+    const active = href === here;
     return h("a", { href, class: active ? "active" : "", "aria-current": active ? "page" : null }, label);
   }));
   const side = h("aside", { class: "side" },
@@ -209,7 +223,7 @@ function shell(content, title, subtitle) {
       h("button", { class: "link danger", onclick: revokeAll, title: "End every panel session, including this one" }, "Sign out everywhere")));
   const main = h("main", { class: "main" },
     h("div", { class: "topbar" },
-      title ? h("div", { class: "heading" }, h("h1", {}, title), subtitle ? h("div", { class: "muted" }, subtitle) : null) : h("div", {}),
+      title ? h("div", { class: "heading" }, back, h("h1", {}, title), subtitle ? h("div", { class: "muted" }, subtitle) : null) : h("div", {}),
       searchBox()),
     content);
   app.className = "";
@@ -428,7 +442,20 @@ function verdict(v) {
 }
 
 async function productPage(key) {
-  const p = await api(`/api/products/${encodeURIComponent(key)}`);
+  const [p, mine] = await Promise.all([
+    api(`/api/products/${encodeURIComponent(key)}`),
+    api("/api/watchlist").catch(() => null),
+  ]);
+  const watching = new Map((mine?.items || []).filter((w) => w.owner).map((w) => [w.listing.id, w]));
+  const watchCell = (l) => {
+    if (!mine?.owner_configured) return "";
+    const watch = watching.get(l.id);
+    if (watch) {
+      return h("div", { class: "row" }, h("span", { class: "muted" }, "Watching"),
+        h("button", { class: "link", onclick: () => mutate(`/api/watches/${watch.watch_id}`, "DELETE", undefined, "Stopped watching.") }, "Stop"));
+    }
+    return h("button", { onclick: () => mutate("/api/watchlist", "POST", { query: l.url, region: l.region }, "Watching. You'll be pinged in Discord.") }, "Watch");
+  };
   const v = p.valuation;
   const hist = p.ebay_history;
   const labels = hist.map((x) => x.day);
@@ -457,6 +484,7 @@ async function productPage(key) {
         { label: "Restock ETA", cell: (l) => l.restock_eta || "—" },
         { label: "Checked", cell: (l) => when(l.last_checked_at) },
         { label: "", cell: (l) => h("a", { href: l.url, target: "_blank", rel: "noopener noreferrer" }, "Store ↗") },
+        { label: "Your watch", cell: watchCell },
       ], p.listings)),
     h("div", { class: "grid cols-2" },
       h("div", { class: "card" }, h("h2", {}, "eBay prices (daily)"),
@@ -474,7 +502,7 @@ async function productPage(key) {
         { label: "Region", cell: (e) => (e.region || "").toUpperCase() },
         { label: "Detail", cell: (e) => [e.old_value, e.new_value].filter(Boolean).join(" → ") },
       ], p.events, "No events recorded for this product.")));
-  shell(content, `${p.sku}${p.pack_size > 1 ? ` ×${p.pack_size}` : ""}`, `${p.name}${p.category ? ` · ${p.category}` : ""}`);
+  shell(content, `${p.sku}${p.pack_size > 1 ? ` ×${p.pack_size}` : ""}`, `${p.name}${p.category ? ` · ${p.category}` : ""}`, { back: backLink("#/") });
 }
 
 const RADAR_FILTERS = [["", "All"], ["deal", "Deals"], ["back_in_stock", "Back in stock"], ["new_listing", "New"], ["early_access", "Early Access"], ["sold_out", "Sold out"], ["price_change", "Price"]];
@@ -1006,7 +1034,7 @@ async function candidatePage(id) {
         { label: "Last", cell: (s) => when(s.seen_at) },
         { label: "", cell: (s) => (s.url ? h("a", { href: s.url, target: "_blank", rel: "noopener noreferrer" }, "Open ↗") : "") },
       ], c.signals))),
-  c.title, [c.brand, c.category].filter(Boolean).join(" · "));
+  c.title, [c.brand, c.category].filter(Boolean).join(" · "), { back: backLink("#/discovery") });
 }
 
 async function systemPage() {
@@ -1073,6 +1101,8 @@ async function route() {
   const params = new URLSearchParams(query);
   const parts = path.split("/").filter(Boolean);
   try {
+    const detail = (parts[0] === "product" || parts[0] === "discovery") && parts[1];
+    if (!detail) cameFrom = location.hash || "#/";
     if (parts[0] === "flips" || parts[0] === "opportunities") await opportunitiesPage(params);
     else if (parts[0] === "product" && parts[1]) await productPage(decodeURIComponent(parts[1]));
     else if (parts[0] === "radar") { await radarPage(params); every(30000, () => radarPage(params).catch(handleError)); }

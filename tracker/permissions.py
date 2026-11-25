@@ -1,8 +1,11 @@
 """Who may do what. Pure functions so every rule is unit-tested.
 
-Owner          global control: server access, comps, scans, valuation display, eBay refresh
+Owner          global control: server access, recorded sales, scans, valuation display, eBay
 Server admin   one server: its channels, roles, mention rules, Check now, test alerts, cleanup
-Member         watch, watches, stock, radar, about (+ flips and Profit where valuations show)
+Member         home, watches, stock, radar, about (+ Flips and Profit where valuations show)
+
+The slash commands are only the two ways in; the screens behind them check roles per button
+(tracker.bot.screens).
 """
 
 from __future__ import annotations
@@ -21,22 +24,11 @@ class Role(IntEnum):
 
 # Minimum role per slash command (qualified name). Anything missing defaults to OWNER.
 COMMAND_ROLES: dict[str, Role] = {
-    "watch": Role.MEMBER,
-    "watches": Role.MEMBER,
-    "stock": Role.MEMBER,  # Profit needs show_valuations; Check now needs SERVER_ADMIN
-    "radar": Role.MEMBER,
-    "flips": Role.MEMBER,  # also needs show_valuations
-    "about": Role.MEMBER,
-    "status": Role.SERVER_ADMIN,
-    "server settings": Role.SERVER_ADMIN,
-    "server configure": Role.SERVER_ADMIN,  # valuations needs OWNER
-    "server audit": Role.SERVER_ADMIN,
-    "server access": Role.OWNER,
-    "comp": Role.OWNER,
-    "scan": Role.OWNER,  # spends eBay quota
+    "flipscout": Role.MEMBER,
+    "stock": Role.MEMBER,
 }
-# Commands whose output contains eBay-derived numbers.
-VALUATION_COMMANDS = frozenset({"flips", "scan"})
+# Commands whose output contains eBay-derived numbers (none: the screens check per button).
+VALUATION_COMMANDS: frozenset[str] = frozenset()
 
 
 def resolve_role(

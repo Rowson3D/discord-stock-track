@@ -189,16 +189,6 @@ class _Followup:
         self.sent.append({"content": content, **kwargs})
 
 
-async def test_radar_acknowledges_before_reading(catalog):
-    commands, _ = _commands(catalog)
-    interaction = SimpleNamespace(response=_Deferring(), followup=_Followup())
-    await commands.radar.callback(commands, interaction)  # type: ignore[arg-type]
-    assert interaction.response.deferred == {"ephemeral": True, "thinking": True}
-    [reply] = interaction.followup.sent
-    assert reply["ephemeral"] is True
-    assert reply["content"] == "Nothing on the radar yet." or reply["embed"].title == "Radar"
-
-
 # ── app wiring ────────────────────────────────────────────────────────────
 
 
@@ -283,21 +273,15 @@ async def test_slash_commands_register_and_serialize():
     await bot.add_cog(TrackerCommands(bot))
     payloads = {cmd.name: cmd.to_dict(bot.tree) for cmd in bot.tree.get_commands()}
     assert set(payloads) == {
-        "watch", "watches", "stock", "flips", "radar", "about",  # members
-        "status", "server", "comp", "scan",  # hidden behind Manage Server
-    }  # fmt: skip
-    for name in ("status", "server", "comp", "scan"):
-        assert payloads[name]["default_member_permissions"] is not None
-    for name in ("watch", "watches", "stock", "flips", "radar", "about"):
-        assert payloads[name]["default_member_permissions"] is None
-    server = {o["name"] for o in payloads["server"]["options"]}
-    assert server == {"settings", "configure", "audit", "access"}
+        "flipscout",  # home: watches, flips, radar, settings
+        "stock",  # straight to a product
+    }
     for payload in payloads.values():
+        assert payload["default_member_permissions"] is None
         assert 1 <= len(payload["description"]) <= 100
         for option in payload.get("options", []):
             assert len(option.get("choices", [])) <= 25
-    watch_options = {o["name"]: o for o in payloads["watch"]["options"]}
-    assert watch_options["product"]["autocomplete"] is True
-    assert watch_options["product"]["required"] is True
-    assert watch_options["max_price"]["required"] is False
+    [product] = payloads["stock"]["options"]
+    assert product["autocomplete"] is True
+    assert product["required"] is True
     await bot.close()

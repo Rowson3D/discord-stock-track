@@ -37,7 +37,7 @@ Old links (`#/opportunities`, `#/servers`, `#/audit`) still work.
 
 New deal alerts pop up as toasts while the panel is open.
 
-Watches and rules you make in the panel belong to your Discord account (the owner) and ping you in your home server, the same as `/watch`. If `DISCORD_OWNER_IDS` isn't set, the panel uses the owner the bot learns from Discord.
+Watches and rules you make in the panel belong to your Discord account (the owner) and ping you in your home server, the same as watching from Discord. If `DISCORD_OWNER_IDS` isn't set, the panel uses the owner the bot learns from Discord.
 
 ## Reach it from your phone or another PC (Tailscale)
 

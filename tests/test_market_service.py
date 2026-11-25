@@ -387,7 +387,7 @@ async def test_deal_and_back_in_stock_alerts_carry_profit(catalog):
 
 
 async def test_opportunities_query_and_embeds(catalog):
-    from tracker.bot.commands import _opportunity_line, value_embed
+    from tracker.bot.render import opportunity_line, value_embed
     from tracker.queries import opportunities, variant_comps
 
     service = _service(catalog, None)
@@ -406,7 +406,7 @@ async def test_opportunities_query_and_embeds(catalog):
             "U7-Pro"
         ]
         assert await opportunities(session, category="switching") == []
-        line = _opportunity_line(1, rows[0])
+        line = opportunity_line(1, rows[0])
         assert "**U7-Pro**" in line
         assert "buy $189.00" in line
 
@@ -423,7 +423,7 @@ async def test_opportunities_query_and_embeds(catalog):
 
 
 def test_value_embed_without_valuation():
-    from tracker.bot.commands import value_embed
+    from tracker.bot.render import value_embed
 
     variant = Variant(sku="E7", sku_key="e7", pack_size=1)
     embed = value_embed(variant, None, None, [], SETTINGS)
