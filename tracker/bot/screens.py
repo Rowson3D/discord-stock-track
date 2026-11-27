@@ -668,9 +668,12 @@ async def home_screen(v: Viewer, state: str = HOME) -> Screen:
             regions=shown_regions(v),
             variant_ids={r.variant.id for r in rows},
         )
-    buyable = [r for r in rows if StockStatus(r.listing.status).is_available]
+    blind = [r for r in rows if unreadable(r.listing)]
+    buyable = [r for r in rows if StockStatus(r.listing.status).is_available and r not in blind]
     if rows:
         lines = [f"**Your watches:** {len(rows)} · {len(buyable)} in stock now"]
+        if blind:
+            lines[0] += f" · ⚠️ {len(blind)} can't be read (see Watches)"
         lines += [
             f"{_status_emoji(r.listing.status)} **{_name(r)}** {_place(r.listing)} · "
             f"{format_cents(r.listing.price_cents, r.listing.currency)}"
