@@ -17,6 +17,7 @@ says no, the lane waits and tries again later.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -27,6 +28,7 @@ from typing import Any
 
 import httpx
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tracker.db.models import Event, Listing
@@ -111,6 +113,8 @@ class FastLane:
         self._wave_until: datetime | None = None
         self.checks = 0
         self.changes = 0
+        self.failures = 0  # checks failed in a row (the watchdog reports a streak)
+        self._tasks: set[asyncio.Task[int]] = set()
         self._summary_at = monotonic()
         self._summary_counts = (0, 0)
 
@@ -187,6 +191,7 @@ class FastLane:
         now = self._clock()
         wave = await self._in_wave(now)
         changed: list[ListingSnapshot] = []
+        etags: dict[str, str] = {}
         for target in targets:
             fast = self.why_fast(now, target.restock_eta, wave)
             interval = FAST_SECONDS if fast else SLOW_SECONDS
@@ -195,16 +200,33 @@ class FastLane:
                 continue
             self._last_check[target.slug] = mono
             try:
-                snapshots = await self.check(target.slug)
+                result = await self.check(target.slug)
             except (httpx.HTTPError, UnifiParseError, ValueError) as exc:
+                self.failures += 1
                 self._warn(target.slug, exc)
                 continue
-            if snapshots:
+            self.failures = 0
+            if result is not None:
+                snapshots, etag = result
                 changed.extend(snapshots)
+                if etag:
+                    etags[target.slug] = etag
         if changed:
-            async with self._sessions() as session, session.begin():
-                await Ingestor(session).ingest(changed, observed_at=self._clock())
-            await self._dispatcher.dispatch()
+            try:
+                async with self._sessions() as session, session.begin():
+                    await Ingestor(session).ingest(changed, observed_at=self._clock())
+            except SQLAlchemyError as exc:
+                # Not saved, so don't remember the new version either: the next check fetches
+                # it again instead of hearing "unchanged".
+                self.failures += 1
+                logger.warning("Drop detector: couldn't save a change (%s); retrying", exc)
+                return 0
+            self._etags.update(etags)
+            # Deliver without waiting: the outbox can take seconds (Discord reconnecting), and
+            # the next fast check shouldn't wait for it.
+            task = asyncio.create_task(self._dispatcher.dispatch(), name="snatch:dispatch")
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
         self._log_summary(len(targets))
         return len(changed)
 
@@ -224,8 +246,11 @@ class FastLane:
         self._summary_at = mono
         self._summary_counts = (self.checks, self.changes)
 
-    async def check(self, slug: str) -> list[ListingSnapshot] | None:
-        """The product's snapshots when the store's data changed, None when it didn't."""
+    async def check(self, slug: str) -> tuple[list[ListingSnapshot], str | None] | None:
+        """(snapshots, new etag) when the store's data changed, None when it didn't.
+
+        The caller remembers the etag only once the snapshots are saved.
+        """
         if self._build is None:
             await self._refresh_build(slug)
         path = f"{REGION}/{self._settings.language}/products/{slug}.json"
@@ -247,10 +272,8 @@ class FastLane:
             "query": {"store": REGION, "language": self._settings.language},
         }
         snapshots = parse_product_page(page, base_url=self.origin)
-        if etag := response.headers.get("etag"):
-            self._etags[slug] = etag
         self.changes += 1
-        return snapshots
+        return snapshots, response.headers.get("etag")
 
     async def _refresh_build(self, slug: str) -> None:
         response = await self._client.get(

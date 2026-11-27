@@ -81,3 +81,49 @@ async def test_load_events_newest_first_with_kind_filter(sessions):
     async with sessions() as session:
         assert len(await load_events(session, pending_only=False, limit=10)) == 1
         assert await load_events(session, pending_only=False, limit=10, kinds=["delisted"]) == []
+
+
+class NamedSink(RecordingSink):
+    def __init__(self, name: str, fail: bool = False) -> None:
+        super().__init__(fail)
+        self.name = name
+
+
+async def test_one_destination_down_doesnt_hold_back_the_others(sessions):
+    """Discord reconnecting must not stop the phone push, or make it repeat."""
+    await _sold_out_event(sessions)
+    now = [T0 + timedelta(minutes=1)]
+    discord, phone = NamedSink("discord", fail=True), NamedSink("ntfy")
+    dispatcher = EventDispatcher(sessions, [discord, phone], clock=lambda: now[0])
+
+    assert await dispatcher.dispatch() == 0  # not done: Discord still owes it
+    assert len(phone.batches) == 1
+    assert "discord" in dispatcher.failing
+
+    now[0] += timedelta(seconds=15)
+    await dispatcher.dispatch()
+    assert len(phone.batches) == 1  # not pushed twice while Discord is retried
+
+    discord.fail = False
+    now[0] += timedelta(seconds=15)
+    assert await dispatcher.dispatch() == 1
+    assert len(discord.batches) == 1
+    assert dispatcher.failing == {}
+    assert await dispatcher.dispatch() == 0
+
+
+async def test_alerts_that_never_got_through_are_counted(sessions):
+    await _sold_out_event(sessions)
+    now = [T0 + timedelta(minutes=1)]
+    dispatcher = EventDispatcher(
+        sessions,
+        [NamedSink("discord", fail=True)],
+        max_age=timedelta(hours=1),
+        clock=lambda: now[0],
+    )
+    await dispatcher.dispatch()
+    now[0] += timedelta(hours=2)
+    await dispatcher.dispatch()
+    assert dispatcher.expired == 1
+    async with sessions() as session:
+        assert (await session.scalar(select(Event))).notified_at is not None

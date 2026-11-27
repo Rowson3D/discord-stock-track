@@ -156,6 +156,29 @@ class Event(Base):
 
     listing: Mapped[Listing | None] = relationship()
 
+    __table_args__ = (
+        # The outbox looks for pending events every few seconds; the drop detector looks for
+        # the latest restock.
+        Index("ix_events_notified_at", "notified_at"),
+        Index("ix_events_kind_occurred_at", "kind", "occurred_at"),
+    )
+
+
+class EventDelivery(Base):
+    """One alert destination (Discord, ntfy, SMS) that has delivered an event.
+
+    Each destination is tried on its own, so a Discord outage doesn't hold back the phone push,
+    and a destination that already delivered isn't asked again when another one is retried.
+    """
+
+    __tablename__ = "event_deliveries"
+
+    event_id: Mapped[int] = mapped_column(
+        ForeignKey("events.id", ondelete="CASCADE"), primary_key=True
+    )
+    sink: Mapped[str] = mapped_column(String(32), primary_key=True)
+    delivered_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
 
 class MarketComp(Base):
     """A manual resale data point (e.g. your own sale) for a variant.

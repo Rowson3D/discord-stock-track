@@ -28,6 +28,9 @@ from tracker.watching import (
 
 __all__ = ["IMPORTANT_KINDS", "AlertPlan", "AlertRouter", "is_price_drop", "strip_valuation"]
 
+# A restock this long after a sell-out is a new wave, not flapping (see _recently_alerted).
+SECOND_WAVE_GAP = timedelta(minutes=3)
+
 # Events that go to the alert channel (with pings). Everything else is routine radar.
 IMPORTANT_KINDS = frozenset(
     {
@@ -166,9 +169,28 @@ class AlertRouter:
                 Event.id < event.id,
                 Event.occurred_at >= event.occurred_at - cooldown,
             )
+            .order_by(Event.id.desc())
             .limit(1)
         )
-        return earlier is not None
+        if earlier is None:
+            return False
+        if event.kind is EventKind.BACK_IN_STOCK:
+            # A real second wave (it sold out and stayed out for a few minutes) is news; only
+            # quick in/out flapping is noise.
+            wave = await session.scalar(
+                select(Event.id)
+                .where(
+                    Event.listing_id == event.listing_id,
+                    Event.kind == EventKind.SOLD_OUT.value,
+                    Event.id > earlier,
+                    Event.id < event.id,
+                    Event.occurred_at <= event.occurred_at - SECOND_WAVE_GAP,
+                )
+                .limit(1)
+            )
+            if wave is not None:
+                return False
+        return True
 
 
 def _muted_now(watch: Watch, now: datetime) -> bool:

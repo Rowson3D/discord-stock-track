@@ -48,7 +48,9 @@ class DiscordSink:
         router: AlertRouter,
         settings: DiscordSettings,
         *,
-        ready_timeout: float = 60.0,
+        # Short: the outbox retries every few seconds, and a long wait here would hold up the
+        # next round of deliveries (the phone push included).
+        ready_timeout: float = 10.0,
     ) -> None:
         self._client = client
         self._sessions = sessions
@@ -148,6 +150,14 @@ class DiscordSink:
         except (discord.Forbidden, discord.NotFound) as exc:
             # Permanent problems (missing permission, deleted channel): retrying won't help.
             logger.error("Cannot post to channel %s: %s", getattr(channel, "id", "?"), exc)
+        except discord.HTTPException as exc:
+            if exc.status == 429 or exc.status >= 500:
+                raise  # rate limited or Discord trouble: the outbox retries
+            # Discord rejected this message (a 400: too long, bad embed). Retrying would block
+            # every alert behind it, so it's skipped.
+            logger.error(
+                "Discord rejected an alert for channel %s: %s", getattr(channel, "id", "?"), exc
+            )
 
 
 def sample_alert_message(test: WatchTest) -> dict[str, Any]:

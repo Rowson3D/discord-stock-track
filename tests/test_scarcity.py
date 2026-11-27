@@ -33,7 +33,7 @@ ACTIVE = MarketStats(active_count=9, active_p25_cents=22000, active_median_cents
 def test_in_stock_asking_prices_are_capped():
     capped = compute_valuation(12900, ACTIVE, None, SETTINGS, available=True)
     assert capped.basis == "capped"
-    assert capped.resale_cents == in_stock_ceiling(12900, SETTINGS) == 14448
+    assert capped.resale_cents == in_stock_ceiling(12900, SETTINGS) == 13545
     assert capped.net_cents < 0
     assert capped.flip_basis is None
     assert not is_deal(capped, True, SETTINGS)
@@ -52,12 +52,23 @@ def test_real_sales_are_never_capped():
 
 
 @pytest.mark.parametrize(
-    ("days", "sellers", "confidence", "deal"),
-    [(1, 9, "none", False), (2, 9, "low", False), (4, 2, "low", False), (4, 6, "medium", True)],
+    ("days", "sellers", "levels", "confidence", "deal"),
+    [
+        (1, 9, 3, "none", False),
+        (2, 9, 2, "low", False),
+        (4, 2, 3, "low", False),
+        (4, 6, 3, "medium", True),
+        (4, 6, 2, "low", False),  # few distinct prices: weaker evidence
+        (9, 1, 3, "none", False),  # one seller is an asking price, not a market
+        (9, 6, 1, "none", False),  # one price sitting unsold for days
+    ],
 )
-def test_scarcity_flip_needs_enough_sold_out_days(days, sellers, confidence, deal):
-    scarcity = ScarcityStats(days=days, resale_cents=22000, sellers=sellers)
-    result = compute_valuation(12900, ACTIVE, None, SETTINGS, available=True, scarcity=scarcity)
+def test_scarcity_flip_needs_real_evidence(days, sellers, levels, confidence, deal):
+    scarcity = ScarcityStats(days=days, resale_cents=22000, sellers=sellers, levels=levels)
+    # A restock that usually sells out within hours: the sold-out market still applies.
+    result = compute_valuation(
+        12900, ACTIVE, None, SETTINGS, available=True, scarcity=scarcity, sold_out_market=True
+    )
     assert result.basis == "capped"  # today's in-stock market is still capped...
     assert result.flip_confidence == confidence
     if confidence != "none":
@@ -191,3 +202,23 @@ async def test_in_stock_item_without_evidence_shows_no_profit(sessions):
         assert all(e.kind is not EventKind.DEAL for e in events)
         back = next(e for e in events if e.kind is EventKind.BACK_IN_STOCK)
         assert back.profit_text is None  # no fake "+$78 est." on the alert
+
+
+def test_an_item_that_stays_in_stock_resells_near_the_store_price():
+    """ECS-48S-PoE: in stock for days, two unsold asks at 1.5x. Not a $1,172 flip."""
+    scarcity = ScarcityStats(days=4, resale_cents=599999, sellers=3, levels=3)
+    result = compute_valuation(
+        399900, None, None, SETTINGS, available=True, scarcity=scarcity, sold_out_market=False
+    )
+    assert result.flip_net_cents is not None
+    assert result.flip_net_cents < 0
+    assert not is_deal(result, True, SETTINGS)
+
+
+def test_pack_prices_compare_a_pack_with_a_pack():
+    """USW-Flex-3: eBay comps are per switch; the store price is for three."""
+    per_unit = MarketStats(sold_count=5, sold_30d=5, sold_median_cents=10958, active_count=5)
+    result = compute_valuation(28200, per_unit, None, SETTINGS, pack_size=3)
+    assert result.resale_cents == 10958 * 3
+    assert result.net_cents is not None
+    assert result.net_cents > -2000  # was about -$199.72 when a pack was valued as one unit

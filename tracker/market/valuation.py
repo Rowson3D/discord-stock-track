@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 
 from tracker.settings import MarketSettings
@@ -79,6 +79,24 @@ class MarketStats:
             sold_p75_cents=self.sold_p75_cents,
         )
 
+    def scaled(self, units: int) -> MarketStats:
+        """Per-unit prices times ``units`` (a pack variant is bought and sold as a pack)."""
+        if units <= 1:
+            return self
+
+        def times(value: int | None) -> int | None:
+            return value * units if value is not None else None
+
+        return replace(
+            self,
+            sold_median_cents=times(self.sold_median_cents),
+            sold_p25_cents=times(self.sold_p25_cents),
+            sold_p75_cents=times(self.sold_p75_cents),
+            active_median_cents=times(self.active_median_cents),
+            active_p25_cents=times(self.active_p25_cents),
+            active_low_cents=times(self.active_low_cents),
+        )
+
 
 EMPTY = MarketStats()
 
@@ -126,8 +144,12 @@ class ScarcityStats:
     """
 
     days: int
-    resale_cents: int | None  # Median of those days' 25th-percentile asking price.
+    # Median of those days' lowest asking price: to sell, you undercut the cheapest seller.
+    resale_cents: int | None
     sellers: int  # Median distinct sellers on those days.
+    # Distinct daily lowest prices. One price repeated for days is one listing that isn't
+    # selling, not days of evidence.
+    levels: int = 1
 
 
 def percentile(values: Sequence[int], fraction: float) -> int | None:
@@ -151,8 +173,16 @@ def drop_outliers(values: list[int], retail_cents: int | None) -> list[int]:
 
 
 def summarize(
-    comps: Sequence[Comp], retail_cents: int | None, settings: MarketSettings, now: datetime
+    comps: Sequence[Comp],
+    retail_cents: int | None,
+    settings: MarketSettings,
+    now: datetime,
+    *,
+    pack_size: int = 1,
 ) -> MarketStats:
+    """Per-unit aggregates. ``retail_cents`` is the variant's price (a whole pack for packs)."""
+    if retail_cents and pack_size > 1:
+        retail_cents //= pack_size
     usable = [c for c in comps if c.condition in RESALE_CONDITIONS and c.match_score >= 0.5]
     sold_cutoff = now - timedelta(days=settings.sold_window_days)
     sold = [c for c in usable if c.sold and (c.sold_at or c.observed_at) >= sold_cutoff]
@@ -218,7 +248,9 @@ def _profit(
     """(fees, shipping, cost, net, roi) for selling at `resale` after buying at retail."""
     if resale is None or not retail_cents:
         return None, None, None, None, None
-    fees = round(resale * settings.fee_rate) + settings.fixed_fee_cents
+    # eBay charges its percentage on the whole order, including the sales tax the buyer pays.
+    rate = settings.fee_rate + settings.promoted_rate
+    fees = round(resale * (1 + settings.buyer_tax_rate) * rate) + settings.fixed_fee_cents
     shipping = settings.outbound_shipping_cents
     cost = round(retail_cents * (1 + settings.purchase_tax_rate)) + settings.inbound_shipping_cents
     net = resale - fees - shipping - cost
@@ -226,15 +258,21 @@ def _profit(
 
 
 def in_stock_ceiling(retail_cents: int, settings: MarketSettings) -> int:
-    """The most a rational buyer pays a reseller when the store has it in stock."""
-    return round(retail_cents * (1 + settings.buyer_tax_rate + settings.convenience_premium))
+    """The most a rational buyer pays a reseller when the store has it in stock.
+
+    Sales tax isn't part of it: the buyer pays it at the store and on eBay alike.
+    """
+    return round(retail_cents * (1 + settings.convenience_premium))
 
 
 def scarcity_confidence(scarcity: ScarcityStats | None, settings: MarketSettings) -> str:
     if scarcity is None or scarcity.resale_cents is None:
         return "none"
+    if scarcity.sellers < 2 or scarcity.levels < 2:
+        # One seller, or one price sitting unsold for days: an asking price, not a market.
+        return "none"
     if scarcity.days >= max(4, settings.scarcity_min_days) and scarcity.sellers >= 3:
-        return "medium"
+        return "medium" if scarcity.levels >= 3 else "low"
     if scarcity.days >= settings.scarcity_min_days:
         return "low"
     return "none"
@@ -248,8 +286,19 @@ def compute_valuation(
     *,
     available: bool = False,
     scarcity: ScarcityStats | None = None,
+    pack_size: int = 1,
+    sold_out_market: bool | None = None,
 ) -> ValuationResult:
-    ebay, manual = ebay or EMPTY, manual or EMPTY
+    """Value a variant. Stats are per unit; ``retail_cents`` is the variant's (pack) price.
+
+    ``sold_out_market``: whether sold-out resale prices apply to a buy now (see
+    ``history.sold_out_market_holds``); by default only while the store is sold out.
+    """
+    if sold_out_market is None:
+        sold_out_market = not available
+    ebay, manual = (ebay or EMPTY).scaled(pack_size), (manual or EMPTY).scaled(pack_size)
+    if scarcity is not None and scarcity.resale_cents is not None and pack_size > 1:
+        scarcity = replace(scarcity, resale_cents=scarcity.resale_cents * pack_size)
     minimum = settings.min_comps
 
     basis: str | None = None
@@ -284,7 +333,11 @@ def compute_valuation(
     scarce_conf = scarcity_confidence(scarcity, settings)
     scarce_net = scarce_roi = None
     if scarce_conf != "none" and scarcity is not None:
-        *_, scarce_net, scarce_roi = _profit(scarcity.resale_cents, retail_cents, settings)
+        scarce_resale = scarcity.resale_cents
+        if not sold_out_market and retail_cents and scarce_resale is not None:
+            # It stays in stock, so sold-out prices don't apply: buyers pay the store.
+            scarce_resale = min(scarce_resale, in_stock_ceiling(retail_cents, settings))
+        *_, scarce_net, scarce_roi = _profit(scarce_resale, retail_cents, settings)
 
     flip_basis = flip_net = flip_roi = None
     flip_conf = "none"

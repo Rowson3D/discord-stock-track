@@ -191,6 +191,6 @@ async def test_in_stock_single_is_capped_so_no_fake_breakout(shop):
     report = await run_scan(shop, ebay, SETTINGS, limit=10, min_retail_cents=10000, now=T0)
     [single] = report.items
     assert single.basis == "capped"
-    assert single.resale_cents == round(12900 * 1.12)
+    assert single.resale_cents == round(12900 * 1.05)
     assert single.net_cents < 0
     assert report.best_breakouts() == []  # no "profit" from asking prices the store undercuts

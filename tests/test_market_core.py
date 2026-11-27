@@ -157,11 +157,12 @@ def test_profit_math_from_sold_comps():
     result = value_from_comps(18900, comps, SETTINGS, T0)
     assert result.basis == "sold"
     assert result.resale_cents == 29500
-    assert result.fees_cents == round(29500 * 0.136) + 40  # 4052
+    # eBay's 13.6% applies to the order total including the buyer's ~7% sales tax.
+    assert result.fees_cents == round(29500 * 1.07 * 0.136) + 40  # 4333
     assert result.shipping_cents == 1200
     assert result.cost_cents == 18900
-    assert result.net_cents == 29500 - 4052 - 1200 - 18900  # 5348
-    assert result.roi == round(5348 / 18900, 4)
+    assert result.net_cents == 29500 - 4333 - 1200 - 18900  # 5067
+    assert result.roi == round(5067 / 18900, 4)
     assert result.confidence == "high"
     assert result.sold_30d == 8
     assert result.score > 0

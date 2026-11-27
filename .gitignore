@@ -29,3 +29,6 @@ Thumbs.db
 *.db-shm
 logs/
 requirements-audit.txt
+.update.lock
+update.log
+docker-compose.override.yml

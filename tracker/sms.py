@@ -81,8 +81,8 @@ class SmsSink:
                     if response.status_code >= 400:
                         # Don't block the outbox on a bad number; log and move on.
                         logger.error(
-                            "Twilio SMS to %s failed: HTTP %s %s",
-                            number,
+                            "Twilio SMS to …%s failed: HTTP %s %s",
+                            number[-4:],  # not the whole phone number in logs
                             response.status_code,
                             response.text[:200],
                         )

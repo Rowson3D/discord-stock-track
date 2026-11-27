@@ -27,6 +27,7 @@ class Job:
     jitter: float = 0.1
     max_backoff: float = 1800.0
     next_run: float = 0.0
+    timeout: float = 900.0
     failures: int = 0
     runs: int = 0
     task: asyncio.Task[None] | None = field(default=None, repr=False)
@@ -63,6 +64,7 @@ class Scheduler:
         initial_delay: float = 0.0,
         jitter: float = 0.1,
         max_backoff: float = 1800.0,
+        timeout: float = 900.0,
     ) -> Job:
         if name in self._jobs:
             raise ValueError(f"duplicate job {name!r}")
@@ -72,6 +74,7 @@ class Scheduler:
             func=func,
             jitter=jitter,
             max_backoff=max_backoff,
+            timeout=timeout,
             next_run=self._clock() + initial_delay,
         )
         self._jobs[name] = job
@@ -81,7 +84,9 @@ class Scheduler:
     async def _execute(self, job: Job) -> None:
         succeeded = False
         try:
-            await job.func()
+            # A hung request must not freeze the job: it's single-flight, so it would never
+            # run again.
+            await asyncio.wait_for(job.func(), timeout=job.timeout)
             succeeded = True
         except asyncio.CancelledError:
             raise

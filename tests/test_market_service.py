@@ -204,7 +204,7 @@ async def test_collect_matches_stores_and_values(catalog):
     # 2 sold comps < min 3 → active listings (4 sellers). But U7-Pro is in stock at the
     # store, so asking prices are capped at what a buyer would pay the store.
     assert valuation.basis == "capped"
-    assert valuation.resale_cents == round(18900 * 1.12)
+    assert valuation.resale_cents == round(18900 * 1.05)
     assert valuation.net_cents < 0
     assert valuation.flip_basis is None  # nothing credible to flip on
     assert valuation.active_count == 4
@@ -418,7 +418,7 @@ async def test_opportunities_query_and_embeds(catalog):
     assert breakdown.startswith("Resale $310.00")
     verdict, comps_field = embed.fields[2], embed.fields[3]
     assert verdict.name == "Verdict"
-    assert "Credible flip** (manual, medium): $66.44" in verdict.value
+    assert "Credible flip** (manual, medium): $63.49" in verdict.value  # fee includes buyer tax
     assert len(comps_field.value.splitlines()) == 3
 
 

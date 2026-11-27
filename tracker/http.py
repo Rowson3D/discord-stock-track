@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import random
+import socket
 import time
 from types import TracebackType
 from urllib.parse import urlsplit
@@ -24,6 +26,28 @@ class FetchError(Exception):
         self.url = url
         self.reason = reason
         self.status = status
+
+
+async def refuse_private_hosts(request: httpx.Request) -> None:
+    """Only fetch public web servers, redirects included.
+
+    Members can paste store links, and a store's open redirect could otherwise point the bot at
+    the LAN or at this machine (the owner panel listens on 127.0.0.1).
+    """
+    url = request.url
+    if url.scheme not in ("http", "https"):
+        raise FetchError(str(url), f"refused {url.scheme} URL")
+    host = url.host
+    if host == "localhost" or host.endswith((".localhost", ".local", ".lan", ".internal")):
+        raise FetchError(str(url), "refused a local address")
+    try:
+        infos = await asyncio.to_thread(socket.getaddrinfo, host, url.port or 443)
+    except OSError:
+        return  # unresolvable: the request itself fails with a clear error
+    for info in infos:
+        address = ipaddress.ip_address(info[4][0])
+        if not address.is_global:
+            raise FetchError(str(url), "refused a private or local address")
 
 
 class _HostGate:
@@ -61,6 +85,7 @@ class HttpClient:
             timeout=settings.timeout_seconds,
             follow_redirects=True,
             transport=transport,
+            event_hooks={"request": [refuse_private_hosts]} if transport is None else None,
             headers={
                 "User-Agent": settings.user_agent,
                 "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",

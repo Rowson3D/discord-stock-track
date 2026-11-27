@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tracker.db.models import Listing, Product, Variant
 from tracker.domain import StockStatus
-from tracker.history import scarcity_stats
+from tracker.history import scarcity_stats, sold_out_market_holds, stock_history
 from tracker.market.ebay import EbayClient
 from tracker.market.matching import VariantMatcher, base_sku
 from tracker.market.service import search_query
@@ -202,14 +202,22 @@ async def run_scan(
                         seller=result.seller,
                     )
                 )
-        stats = summarize(comps, retail, settings, now)
+        stats = summarize(comps, retail, settings, now, pack_size=variant.pack_size)
         available = StockStatus(listing.status).is_available
         async with sessions() as session:
             scarcity = await scarcity_stats(
                 session, variant.id, listing.id, now=now, window_days=settings.scarcity_window_days
             )
+            history = await stock_history(session, listing.id)
         value = compute_valuation(
-            retail, stats, None, settings, available=available, scarcity=scarcity
+            retail,
+            stats,
+            None,
+            settings,
+            available=available,
+            scarcity=scarcity,
+            pack_size=variant.pack_size,
+            sold_out_market=sold_out_market_holds(history, available, now),
         )
         item = ScanItem(
             sku=variant.sku,

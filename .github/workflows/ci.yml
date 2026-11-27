@@ -30,6 +30,9 @@ jobs:
       - name: Test
         run: uv run pytest -q
 
+      - name: Shell scripts (shellcheck)
+        run: shellcheck --severity=warning scripts/*.sh
+
   security:
     runs-on: ubuntu-latest
     steps:

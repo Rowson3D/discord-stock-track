@@ -18,11 +18,16 @@
 # to data/backups/, starts the new version and waits for Docker to call it healthy (the bot's
 # heartbeat). If it never does, the old image, the old database and the old commit go back.
 # The result goes to data/update-result, which the bot reports to the owner within a minute,
-# and the log to data/update.log.
+# and the log to update.log (next to this checkout).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
 DATA=$ROOT/data
+# The bot's container can write to data/, so nothing here follows a link in it or repeats its
+# text: the lock and the log live outside it, files are written through fresh temp names, and
+# the database and backup folder must be a plain file and folder.
+LOCK=$ROOT/.update.lock
+LOG=$ROOT/update.log
 DB=$DATA/tracker.db
 BACKUPS=$DATA/backups
 BRANCH=${FLIPSCOUT_UPDATE_BRANCH:-main}
@@ -38,21 +43,28 @@ BACKUP=""
 backup() { # backup <kind> <keep>: an online-safe copy of the database, keeping the newest few
   local kind=$1 keep=$2
   BACKUP=""
+  if [ -L "$DB" ] || [ -L "$BACKUPS" ]; then
+    echo "Refusing to back up: $DB or $BACKUPS is a link"
+    return 1
+  fi
   if [ ! -f "$DB" ]; then
     echo "No $DB to back up"
     return 0
   fi
   mkdir -p "$BACKUPS"
-  local dest
+  local dest tmp
   dest=$BACKUPS/$kind-$(date -u +%Y%m%dT%H%M%SZ)-$(git rev-parse --short HEAD).db
+  tmp=$(mktemp "$BACKUPS/.backup.XXXXXX") || return 1
   if command -v sqlite3 >/dev/null; then
-    sqlite3 "$DB" ".backup '$dest'" || return 1
+    sqlite3 "$DB" ".backup '$tmp'" || { rm -f "$tmp"; return 1; }
   else
     python3 -c 'import sqlite3, sys; s, d = map(sqlite3.connect, sys.argv[1:]); s.backup(d)' \
-      "$DB" "$dest" || return 1
+      "$DB" "$tmp" || { rm -f "$tmp"; return 1; }
   fi
-  # shellcheck disable=SC2012 # our own file names: no spaces or newlines
-  ls -1t "$BACKUPS/$kind"-*.db | tail -n +$((keep + 1)) | xargs -r rm -f --
+  mv -f "$tmp" "$dest" || return 1
+  # Keep the newest few: plain files only, newest first, names handled null-separated.
+  find "$BACKUPS" -maxdepth 1 -type f -name "$kind-*.db" -printf '%T@ %p\0' \
+    | sort -zrn | tail -zn +$((keep + 1)) | cut -zd' ' -f2- | xargs -0r rm -f --
   BACKUP=$dest
   echo "Backed up the database to ${dest#"$ROOT"/}"
 }
@@ -60,8 +72,8 @@ backup() { # backup <kind> <keep>: an online-safe copy of the database, keeping 
 mode=${1:-}
 case "$mode" in
   --install)
-    lines="* * * * * $ROOT/scripts/update.sh --if-requested >> $DATA/update.log 2>&1
-17 4 * * * $ROOT/scripts/update.sh --backup >> $DATA/update.log 2>&1"
+    lines="* * * * * $ROOT/scripts/update.sh --if-requested >> $LOG 2>&1
+17 4 * * * $ROOT/scripts/update.sh --backup >> $LOG 2>&1"
     { crontab -l 2>/dev/null | grep -vF "$ROOT/scripts/update.sh" || true; echo "$lines"; } \
       | crontab -
     echo "Installed in your crontab:"
@@ -74,7 +86,7 @@ case "$mode" in
 esac
 
 mkdir -p "$DATA"
-exec 9>"$DATA/update.lock"
+exec 9>"$LOCK"
 if ! flock -n 9; then
   echo "$(stamp) another update is running"
   exit 0
@@ -98,20 +110,23 @@ esac
 asked=$target # what to offer as "Try again" if this fails
 
 finish() { # finish <ok|failed> <detail>
+  local tmp
+  tmp=$(mktemp "$DATA/.update-result.XXXXXX") || return 1
   {
     echo "status=$1"
     echo "sha=$(git rev-parse HEAD)"
     echo "target=$asked"
     echo "finished=$(stamp)"
-    echo "detail=$2"
-  } >"$RESULT.tmp"
-  mv "$RESULT.tmp" "$RESULT"
+    echo "detail=${2//$'\n'/ }"
+  } >"$tmp"
+  chmod 644 "$tmp"
+  mv -f "$tmp" "$RESULT"
   echo "$(stamp) $1: $2"
 }
 
 if [ -n "$target" ] && ! [[ $target =~ ^[0-9a-f]{40}$ ]]; then
   asked=""
-  finish failed "Not a full commit id: ${target:0:60}"
+  finish failed "The update request wasn't a commit id."
   exit 1
 fi
 
@@ -172,7 +187,9 @@ rollback() {
   if [ -n "$BACKUP" ]; then
     # The failed version may have migrated the database; the old one can't read that.
     rm -f "$DB-wal" "$DB-shm"
-    cp "$BACKUP" "$DB.restore" && mv "$DB.restore" "$DB" || return 1
+    local restore
+    restore=$(mktemp "$DATA/.restore.XXXXXX") || return 1
+    cp "$BACKUP" "$restore" && mv -f "$restore" "$DB" || return 1
     echo "Restored the database from ${BACKUP#"$ROOT"/}"
   fi
   if [ "$(git rev-parse HEAD)" != "$before" ]; then

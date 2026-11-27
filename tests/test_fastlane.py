@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 from collections.abc import Callable
@@ -95,6 +96,7 @@ async def test_checks_cost_nothing_until_the_store_changes(
     )
 
     assert await lane.tick() > 0  # it sold out: changed data goes through the normal ingest
+    await asyncio.sleep(0)  # alerts go out in the background, not inside the check
     assert dispatcher.calls == 1
     async with sessions() as session:
         kinds = set(await session.scalars(select(Event.kind)))

@@ -41,6 +41,7 @@ from tracker.sms import SmsSink
 from tracker.sources.bestbuy_api import BestBuyStock
 from tracker.sources.unifi import UnifiStore
 from tracker.sources.web import fetch_listing
+from tracker.watchdog import Watchdog
 
 if TYPE_CHECKING:
     from tracker.bot.client import TrackerBot
@@ -83,10 +84,32 @@ def build_scheduler(
             partial(unifi.check_home, region),
             initial_delay=15.0 + index * 5.0,
         )
-    scheduler.add("unifi:hot", monitor.hot_tick_seconds, unifi.poll_hot, initial_delay=30.0)
-    scheduler.add("retail:poll", settings.retail.tick_seconds, retail.poll_due, initial_delay=10.0)
+    # Restock-catching and alert jobs retry within a minute after a failure, never 30.
+    scheduler.add(
+        "unifi:hot",
+        monitor.hot_tick_seconds,
+        unifi.poll_hot,
+        initial_delay=30.0,
+        max_backoff=60.0,
+        timeout=300.0,
+    )
+    scheduler.add(
+        "retail:poll",
+        settings.retail.tick_seconds,
+        retail.poll_due,
+        initial_delay=10.0,
+        max_backoff=60.0,
+        timeout=300.0,
+    )
     # Safety net: retries events a failed sink left pending.
-    scheduler.add("outbox:dispatch", DISPATCH_INTERVAL_SECONDS, dispatcher.dispatch, jitter=0)
+    scheduler.add(
+        "outbox:dispatch",
+        DISPATCH_INTERVAL_SECONDS,
+        dispatcher.dispatch,
+        jitter=0,
+        max_backoff=60.0,
+        timeout=120.0,
+    )
     return scheduler
 
 
@@ -175,6 +198,10 @@ def add_market_jobs(scheduler: Scheduler, market: MarketService, settings: Setti
         settings.market.valuation_interval_seconds,
         market.revalue_all,
         initial_delay=45.0,
+    )
+    # Restocks are valued within seconds, so their deal alerts arrive while they're buyable.
+    scheduler.add(
+        "market:restocks", 10.0, market.revalue_restocks, initial_delay=50.0, max_backoff=60.0
     )
 
 
@@ -268,7 +295,15 @@ async def _run_locked(
             scheduler.add("db:schema-guard", 60.0, schema_guard, initial_delay=60.0)
             fastlane = FastLane(sessions, settings.unifi, dispatcher)
             # Ticks every second; each product on the snatch list is checked every 5 or 20s.
-            scheduler.add("unifi:snatch", 1.0, fastlane.tick, initial_delay=15.0, jitter=0)
+            scheduler.add(
+                "unifi:snatch",
+                1.0,
+                fastlane.tick,
+                initial_delay=15.0,
+                jitter=0,
+                max_backoff=30.0,
+                timeout=60.0,
+            )
             await auto_import_legacy(settings, sessions, store)
 
             router = AlertRouter()
@@ -293,6 +328,16 @@ async def _run_locked(
             register_alert_sinks(settings, sessions, dispatcher, router, bot)
 
             panel = _build_panel(settings, sessions, scheduler, bot, unifi, retail, discovery)
+            watchdog = Watchdog(
+                sessions,
+                scheduler,
+                dispatcher,
+                _owner_notifier(settings, bot),
+                regions=regions,
+                crawl_interval_seconds=settings.monitor.catalog_interval_seconds,
+                fastlane=fastlane,
+            )
+            scheduler.add("watchdog", 60.0, watchdog.check, initial_delay=180.0, jitter=0)
             ready = bot.is_ready if bot is not None else None
             scheduler.add(
                 "heartbeat",
@@ -355,6 +400,32 @@ def register_alert_sinks(
     names = dispatcher.sink_names
     logger.info("Alerts go to: %s", ", ".join(names))
     return names
+
+
+def _owner_notifier(
+    settings: Settings, bot: TrackerBot | None
+) -> Callable[[str, str], Awaitable[None]]:
+    """Problems go out by ntfy and by Discord DM, each on its own, so one outage can't hide them."""
+
+    async def notify(title: str, text: str) -> None:
+        if settings.ntfy.configured:
+            from tracker.ntfy import NtfyClient
+
+            client = NtfyClient(settings.ntfy)
+            message = {
+                "topic": client.topic,
+                "title": title,
+                "message": text,
+                "priority": 4,
+                "tags": ["warning"],
+            }
+            await client.send([message])
+        if bot is not None and bot.is_ready():
+            import discord
+
+            await bot.dm_owners(discord.Embed(title=title, description=text[:4000]))
+
+    return notify
 
 
 def _build_bot(

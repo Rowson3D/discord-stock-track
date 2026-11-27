@@ -343,12 +343,16 @@ class MarketSettings(BaseSettings):
     fixed_fee_cents: int = Field(default=40, ge=0)
     # What you pay to ship a sold unit (label + packaging), per unit.
     outbound_shipping_cents: int = Field(default=1200, ge=0)
+    # Sales tax you pay when you buy (0 with a resale certificate on file at the store).
     purchase_tax_rate: float = Field(default=0.0, ge=0, le=0.3)
+    # Promoted Listings ad rate you usually pay, charged like the final value fee.
+    promoted_rate: float = Field(default=0.0, ge=0, le=0.2)
     inbound_shipping_cents: int = Field(default=0, ge=0)
 
     min_comps: int = Field(default=3, ge=1)
-    # In-stock ceiling for asking-price valuations: retail x (1 + buyer tax + convenience).
+    # Average sales tax eBay buyers pay: eBay's fee is charged on it too.
     buyer_tax_rate: float = Field(default=0.07, ge=0, le=0.3)
+    # In-stock ceiling for asking-price valuations: retail x (1 + convenience).
     convenience_premium: float = Field(default=0.05, ge=0, le=1)
     # Scarcity pricing needs at least this many daily snapshots taken while sold out.
     scarcity_min_days: int = Field(default=2, ge=1)

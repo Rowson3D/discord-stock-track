@@ -34,7 +34,7 @@ from tracker.db.models import (
     Watch,
 )
 from tracker.domain import EventKind, Priority, SourceKey, StockStatus, format_cents
-from tracker.history import scarcity_stats
+from tracker.history import scarcity_stats, sold_out_market_holds, stock_history
 from tracker.market.ebay import EbayClient, EbayError, EbayItem
 from tracker.market.matching import MatchResult, VariantMatcher, base_sku
 from tracker.market.valuation import (
@@ -124,6 +124,7 @@ class MarketService:
         self._settings = settings
         self._dispatcher = dispatcher
         self._clock = clock
+        self._restocks_seen: datetime | None = None
         self._scan_lock = asyncio.Lock()
 
     @property
@@ -291,7 +292,7 @@ class MarketService:
                     seller=item.seller,
                 )
             )
-        stats = summarize(comps, retail_cents, self._settings, now)
+        stats = summarize(comps, retail_cents, self._settings, now, pack_size=pack)
 
         async with self._sessions() as session, session.begin():
             row = await session.get(EbayStats, variant_id)
@@ -443,8 +444,12 @@ class MarketService:
                 listing = await retail_listing(session, variant_id)
                 retail_cents = listing.price_cents if listing else None
                 available = bool(listing and StockStatus(listing.status).is_available)
+                pack = await session.scalar(
+                    select(Variant.pack_size).where(Variant.id == variant_id)
+                )
+                pack = pack or 1
                 manual_stats = summarize(
-                    manual.get(variant_id, []), retail_cents, self._settings, now
+                    manual.get(variant_id, []), retail_cents, self._settings, now, pack_size=pack
                 )
                 scarcity = (
                     await scarcity_stats(
@@ -464,6 +469,14 @@ class MarketService:
                     self._settings,
                     available=available,
                     scarcity=scarcity,
+                    pack_size=pack,
+                    sold_out_market=(
+                        sold_out_market_holds(
+                            await stock_history(session, listing.id), available, now
+                        )
+                        if listing is not None
+                        else None
+                    ),
                 )
                 results[variant_id] = result
                 events += await self._store(session, variant_id, listing, available, result, now)
@@ -473,6 +486,33 @@ class MarketService:
 
     async def revalue_all(self) -> int:
         return len(await self.revalue(None))
+
+    async def revalue_restocks(self) -> int:
+        """Value what just came back right away, so its deal alert isn't up to 15 minutes late.
+
+        Restock windows can be shorter than the regular valuation interval; the deal alert has to
+        go out while the item can still be bought.
+        """
+        now = self._clock()
+        since = self._restocks_seen or now - timedelta(minutes=2)
+        async with self._sessions() as session:
+            ids = list(
+                await session.scalars(
+                    select(Listing.variant_id)
+                    .join(Event, Event.listing_id == Listing.id)
+                    .where(
+                        Event.kind.in_(
+                            [EventKind.BACK_IN_STOCK.value, EventKind.EARLY_ACCESS.value]
+                        ),
+                        Event.occurred_at > since,
+                    )
+                    .distinct()
+                )
+            )
+        self._restocks_seen = now
+        if ids:
+            await self.revalue(ids)
+        return len(ids)
 
     async def _store(
         self,

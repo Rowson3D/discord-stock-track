@@ -20,7 +20,7 @@ from typing import Protocol
 from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from tracker.db.models import Event, Listing, Product, Valuation, Variant
+from tracker.db.models import Event, EventDelivery, Listing, Product, Valuation, Variant
 from tracker.domain import EventKind, StockStatus, format_cents, region_tag
 
 logger = logging.getLogger(__name__)
@@ -205,6 +205,9 @@ class EventDispatcher:
         self._batch_size = batch_size
         self._clock = clock
         self._lock = asyncio.Lock()
+        # For the watchdog: alerts given up on, and destinations that are failing right now.
+        self.expired = 0
+        self.failing: dict[str, str] = {}  # sink name -> last error
 
     def add_sink(self, sink: EventSink) -> None:
         """Register a destination after construction (Discord, SMS, ntfy are built later)."""
@@ -215,35 +218,93 @@ class EventDispatcher:
         return [sink.name for sink in self._sinks]
 
     async def dispatch(self) -> int:
-        """Publish pending events. Returns how many were published (not counting stale ones)."""
+        """Deliver pending events to every destination. Returns how many were fully delivered.
+
+        Each destination (sink) is tried on its own, all at once: one that's down (Discord
+        reconnecting) doesn't hold back the others (the phone push), and one that already
+        delivered an event isn't asked again while another is retried. An event is done when
+        every destination has it, or when it's older than ``max_age``; then it's given up on and
+        counted in ``expired`` (the watchdog tells the owner).
+        """
         async with self._lock:
-            published = 0
+            done = 0
             while True:
                 async with self._sessions() as session:
                     pending = await load_events(session, pending_only=True, limit=self._batch_size)
+                    delivered = await _delivered(session, [e.id for e in pending])
                 if not pending:
-                    return published
+                    return done
 
                 now = self._clock()
                 fresh = [e for e in pending if now - e.occurred_at <= self._max_age]
-                stale = len(pending) - len(fresh)
-                if stale:
-                    logger.info("Recording %d stale event(s) without announcing them", stale)
-
-                if fresh:
-                    for sink in self._sinks:
-                        try:
-                            await sink.publish(fresh)
-                        except Exception:
-                            logger.exception("Sink %s failed; events stay pending", sink.name)
-                            return published
-
-                async with self._sessions() as session, session.begin():
-                    await session.execute(
-                        update(Event)
-                        .where(Event.id.in_([e.id for e in pending]))
-                        .values(notified_at=now)
+                stale = [e for e in pending if now - e.occurred_at > self._max_age]
+                results = await asyncio.gather(
+                    *(
+                        self._publish(
+                            sink, [e for e in fresh if sink.name not in delivered.get(e.id, ())]
+                        )
+                        for sink in self._sinks
                     )
-                published += len(fresh)
-                if len(pending) < self._batch_size:
-                    return published
+                )
+                for sink, ids in zip(self._sinks, results, strict=True):
+                    for event_id in ids:
+                        delivered.setdefault(event_id, set()).add(sink.name)
+                complete = [
+                    e.id
+                    for e in fresh
+                    if all(s.name in delivered.get(e.id, ()) for s in self._sinks)
+                ]
+                missed = [
+                    e
+                    for e in stale
+                    if any(s.name not in delivered.get(e.id, ()) for s in self._sinks)
+                ]
+                if missed:
+                    self.expired += len(missed)
+                    logger.warning(
+                        "Gave up on %d alert(s) older than %s that never reached every destination",
+                        len(missed),
+                        self._max_age,
+                    )
+                finished = complete + [e.id for e in stale]
+                async with self._sessions() as session, session.begin():
+                    for sink, ids in zip(self._sinks, results, strict=True):
+                        session.add_all(
+                            EventDelivery(event_id=i, sink=sink.name, delivered_at=now) for i in ids
+                        )
+                    if finished:
+                        await session.execute(
+                            update(Event).where(Event.id.in_(finished)).values(notified_at=now)
+                        )
+                done += len(complete)
+                if len(pending) < self._batch_size or not finished:
+                    return done
+
+    async def _publish(self, sink: EventSink, events: list[RadarEvent]) -> list[int]:
+        """The ids this destination delivered (all of them, or none when it failed)."""
+        if not events:
+            return []
+        try:
+            await sink.publish(events)
+        except Exception as exc:
+            if sink.name not in self.failing:
+                logger.exception("Alert destination %s failed; its alerts stay pending", sink.name)
+            self.failing[sink.name] = f"{type(exc).__name__}: {exc}"[:200]
+            return []
+        if self.failing.pop(sink.name, None) is not None:
+            logger.info("Alert destination %s is delivering again", sink.name)
+        return [e.id for e in events]
+
+
+async def _delivered(session: AsyncSession, event_ids: list[int]) -> dict[int, set[str]]:
+    if not event_ids:
+        return {}
+    rows = await session.execute(
+        select(EventDelivery.event_id, EventDelivery.sink).where(
+            EventDelivery.event_id.in_(event_ids)
+        )
+    )
+    found: dict[int, set[str]] = {}
+    for event_id, sink in rows.all():
+        found.setdefault(event_id, set()).add(sink)
+    return found

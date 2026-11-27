@@ -85,6 +85,30 @@ def summarize_stock(points: Sequence[StockPoint]) -> StockHistory:
     return history
 
 
+# A restock that usually sells out within this long keeps the sold-out resale market alive.
+FAST_SELLOUT = timedelta(hours=12)
+
+
+def sold_out_market_holds(history: StockHistory, available: bool, now: datetime) -> bool:
+    """Whether sold-out (scarcity) prices still apply to a buy right now.
+
+    Sold out: yes. In stock: only for an item whose restocks usually sell out fast and that came
+    back recently; one that sits in stock for days resells at about the store price.
+    """
+    if not available:
+        return True
+    median = history.median_sellout
+    if median is not None and median > FAST_SELLOUT:
+        return False  # its restocks linger
+    # No finished restock yet counts as fast: a first restock after a sold-out spell is when
+    # the sold-out market is most real. Either way it lapses 12 hours into the restock.
+    since = history.available_since
+    if since is None:
+        return False
+    since = since if since.tzinfo else since.replace(tzinfo=now.tzinfo)
+    return now - since <= FAST_SELLOUT
+
+
 async def stock_history(session: AsyncSession, listing_id: int) -> StockHistory:
     rows = await session.execute(
         select(StockObservation.observed_at, StockObservation.status)
@@ -191,12 +215,14 @@ async def scarcity_stats(
         if index < 0:
             continue  # No stock knowledge yet at that moment.
         status = StockStatus(observations[index][1])
-        if status.is_known and not status.is_available and row.active_p25_cents is not None:
-            scarce.append(row)
+        low = row.active_low_cents if row.active_low_cents is not None else row.active_p25_cents
+        if status.is_known and not status.is_available and low is not None:
+            scarce.append((row, low))
     if not scarce:
-        return ScarcityStats(days=0, resale_cents=None, sellers=0)
+        return ScarcityStats(days=0, resale_cents=None, sellers=0, levels=0)
     return ScarcityStats(
         days=len(scarce),
-        resale_cents=round(statistics.median(r.active_p25_cents for r in scarce)),
-        sellers=round(statistics.median(r.active_count for r in scarce)),
+        resale_cents=round(statistics.median(low for _, low in scarce)),
+        sellers=round(statistics.median(r.active_count for r, _ in scarce)),
+        levels=len({low for _, low in scarce}),
     )

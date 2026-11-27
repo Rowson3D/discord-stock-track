@@ -299,3 +299,12 @@ def test_sms_body_is_compact():
 def test_mention_kinds_parse(kinds: str):
     settings = DiscordSettings(_env_file=None, mention_kinds=kinds)  # type: ignore[call-arg]
     assert settings.mention_kinds[0] == "back_in_stock"
+
+
+async def test_a_second_restock_wave_is_announced(sessions):
+    """Sold out for 4 minutes, then back: a new wave worth a ping, not flapping."""
+    out = {"status": StockStatus.OUT_OF_STOCK}
+    await _history(sessions, {}, out, {}, out, out, out, out, {})
+    plans = await _plan(sessions)
+    backs = [p for p in plans if p.event.kind is EventKind.BACK_IN_STOCK]
+    assert [p.suppressed for p in backs] == [None, None]

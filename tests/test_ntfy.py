@@ -132,11 +132,12 @@ async def test_alert_types_and_server_defaults(sessions):
     assert recorder.requests == []  # back in stock isn't in this server default list
 
 
-async def test_failures_are_logged_not_raised(sessions, caplog):
+async def test_a_push_that_never_got_through_stays_pending(sessions, caplog):
     events = await restock_events(sessions)
     await add(sessions, Watch(discord_user_id=OWNER, listing_id=-1))
     recorder = Recorder(status=429)
-    await sink(sessions, recorder).publish(events)
+    with pytest.raises(RuntimeError, match="ntfy accepted none"):
+        await sink(sessions, recorder).publish(events)  # the outbox retries it
     assert "ntfy push failed: HTTP 429" in caplog.text
 
     def boom(request: httpx.Request) -> httpx.Response:

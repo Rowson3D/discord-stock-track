@@ -232,3 +232,17 @@ async def test_only_the_owner_can_press_update_now(tmp_path: Path) -> None:
     kwargs = owner.response.edit_message.await_args.kwargs
     assert kwargs["view"] is None
     assert "Updating to `bbbbbbb`" in kwargs["content"]
+
+
+def test_updates_that_change_the_server_setup_are_flagged() -> None:
+    from tracker.updates import Available, Commit, is_server_file
+
+    assert is_server_file("docker-compose.yml")
+    assert is_server_file("Dockerfile")
+    assert is_server_file("scripts/update.sh")
+    assert not is_server_file("tracker/bot/screens.py")
+    available = Available(
+        NEW, 1, [Commit(NEW, "Change", "")], "https://github.com/compare", ("docker-compose.yml",)
+    )
+    embed, _ = notice_message(Notice(available=available))
+    assert "Changes how it runs on your server" in (embed.description or "")

@@ -54,6 +54,9 @@ class Available:
     ahead_by: int
     commits: list[Commit]  # oldest first, at most GitHub's 250
     compare_url: str
+    # Changed files that control how the bot runs on the host (Docker, the update script).
+    # Update now builds and runs exactly what's on GitHub, so these deserve a look first.
+    server_files: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,11 +104,23 @@ async def compare(client: httpx.AsyncClient, repo: str, base: str, branch: str) 
         )
         for c in data["commits"]
     ]
+    files = [str(f.get("filename", "")) for f in data.get("files") or [] if isinstance(f, dict)]
     return Available(
         head=commits[-1].sha,
         ahead_by=int(data.get("ahead_by") or len(commits)),
         commits=commits,
         compare_url=data.get("html_url", ""),
+        server_files=tuple(f for f in files if is_server_file(f)),
+    )
+
+
+def is_server_file(path: str) -> bool:
+    name = path.rsplit("/", 1)[-1]
+    return (
+        name == "Dockerfile"
+        or name.startswith("docker-compose")
+        or name == ".dockerignore"
+        or path.startswith(("scripts/", ".github/"))
     )
 
 

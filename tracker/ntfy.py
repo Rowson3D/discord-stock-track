@@ -179,7 +179,11 @@ class NtfySink:
             picked = await self.chosen(session, events)
         if picked:
             topic = self._client.topic
-            await self._client.send([ntfy_message(e, topic) for e in picked])
+            sent = await self._client.send([ntfy_message(e, topic) for e in picked])
+            if sent == 0:
+                # ntfy unreachable: raise so the outbox keeps these pending and retries (a
+                # partial failure is rare, and repeating the pushes that got through is worse).
+                raise RuntimeError(f"ntfy accepted none of {len(picked)} push(es)")
 
 
 # ── command line: tracker ntfy setup | show | test ──────────────────────────

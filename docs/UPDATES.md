@@ -32,7 +32,7 @@ The bot's container has no access to Docker or the server, by design, so it can 
 4. If it never becomes healthy, the script puts everything back: the previous image, the database
    from the backup (the new version may have migrated it, and the old one can't read that) and
    the previous commit. If the build itself fails, the old version never stopped.
-5. The script writes `data/update-result` and appends to `data/update.log`. The bot checks for
+5. The script writes `data/update-result` and appends to `update.log` (next to the checkout, outside `data/`). The bot checks for
    the result every minute and DMs you.
 
 "Healthy" means the bot is connected to Discord and its database answers: every 20 seconds it

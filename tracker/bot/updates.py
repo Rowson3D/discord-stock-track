@@ -84,6 +84,13 @@ def notice_message(notice: Notice) -> tuple[discord.Embed, discord.ui.View | Non
         ]
         if new.ahead_by > SHOWN_COMMITS:
             lines.append(f"…and {new.ahead_by - SHOWN_COMMITS} older")
+        if new.server_files:
+            shown = ", ".join(f"`{f}`" for f in new.server_files[:6])
+            lines += [
+                "",
+                f"⚠️ **Changes how it runs on your server:** {shown}. Update now builds and runs "
+                "exactly this, so look at the changes first if you didn't make them.",
+            ]
         embed = discord.Embed(
             title=f"FlipScout update: {new.ahead_by} new commit{'s' if new.ahead_by != 1 else ''}",
             description="\n".join(lines)[:4000],
@@ -110,7 +117,7 @@ def notice_message(notice: Notice) -> tuple[discord.Embed, discord.ui.View | Non
                     f"Still running `{short(notice.running)}`.\n" if notice.running else ""
                 )
                 + (f"```\n{result.detail}\n```" if result.detail else "")
-                + "Details: `data/update.log` on the server.",
+                + "Details: `update.log` on the server.",
                 color=RED,
             )
             if retry:
