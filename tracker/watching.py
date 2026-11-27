@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Collection, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -234,8 +234,10 @@ class WatchRow:
     product: Product
 
 
-async def user_watch_rows(session: AsyncSession, user_id: str) -> list[WatchRow]:
-    rows = await session.execute(
+async def user_watch_rows(
+    session: AsyncSession, user_id: str, *, regions: Collection[str] | None = None
+) -> list[WatchRow]:
+    stmt = (
         select(Watch, Listing, Variant, Product)
         .join(Listing, Watch.listing_id == Listing.id)
         .join(Variant, Listing.variant_id == Variant.id)
@@ -243,7 +245,9 @@ async def user_watch_rows(session: AsyncSession, user_id: str) -> list[WatchRow]
         .where(Watch.discord_user_id == user_id)
         .order_by(Variant.sku, Listing.source, Listing.region)
     )
-    return [WatchRow(*row) for row in rows.all()]
+    if regions is not None:
+        stmt = stmt.where(Listing.region.in_(list(regions)))
+    return [WatchRow(*row) for row in (await session.execute(stmt)).all()]
 
 
 async def mute_watches(

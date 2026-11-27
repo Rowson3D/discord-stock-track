@@ -12,16 +12,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Protocol
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tracker.db.models import Event, Listing, Product, Valuation, Variant
-from tracker.domain import EventKind, StockStatus, format_cents
+from tracker.domain import EventKind, StockStatus, format_cents, region_tag
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +80,8 @@ class RadarEvent:
         parts = [_HEADLINES.get(self.kind, self.kind.upper())]
         if self.sku:
             parts.append(self.sku if not self.product_name else f"{self.sku} ({self.product_name})")
-        if self.region:
-            parts.append(self.region.upper())
+        if tag := region_tag(self.region):
+            parts.append(tag)
         if self.kind in (EventKind.PRICE_CHANGE, EventKind.RESTOCK_ETA, EventKind.STATUS_CHANGE):
             parts.append(f"{self.old_value or '—'} → {self.new_value or '—'}")
         elif self.price_cents is not None:
@@ -123,7 +123,12 @@ class LoggingSink:
 
 
 async def load_events(
-    session: AsyncSession, *, pending_only: bool, limit: int, kinds: Sequence[str] | None = None
+    session: AsyncSession,
+    *,
+    pending_only: bool,
+    limit: int,
+    kinds: Sequence[str] | None = None,
+    regions: Collection[str] | None = None,
 ) -> list[RadarEvent]:
     stmt = (
         select(Event, Listing, Variant, Product, Valuation)
@@ -139,6 +144,8 @@ async def load_events(
         stmt = stmt.order_by(Event.id.desc())
     if kinds:
         stmt = stmt.where(Event.kind.in_(list(kinds)))
+    if regions is not None:
+        stmt = stmt.where(or_(Listing.region.in_(list(regions)), Event.listing_id.is_(None)))
 
     events: list[RadarEvent] = []
     for event, listing, variant, product, valuation in (await session.execute(stmt)).all():

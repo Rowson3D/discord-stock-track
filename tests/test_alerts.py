@@ -291,7 +291,7 @@ def test_sms_body_is_compact():
         StockStatus.IN_STOCK, 18900, "USD", None, True,
     )  # fmt: skip
     assert sms_body(event) == (
-        "EARLY ACCESS: U7-Pro | $189.00 | US | https://store.ui.com/us/en/products/u7-pro"
+        "EARLY ACCESS: U7-Pro | $189.00 | https://store.ui.com/us/en/products/u7-pro"
     )
 
 

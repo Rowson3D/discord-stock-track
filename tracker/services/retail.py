@@ -35,9 +35,10 @@ def effective_interval(settings: RetailSettings, listing: Listing) -> float:
     )
     failures = listing.consecutive_unknowns
     if failures >= 50:
-        return min(interval * 20, 4 * 3600)
+        # It's blocked or the page changed: an occasional look is enough to notice it's back.
+        return max(interval, 4 * 3600)
     if failures >= 10:
-        return min(interval * 10, 3600)
+        return max(interval, min(interval * 10, 3600))
     return interval
 
 

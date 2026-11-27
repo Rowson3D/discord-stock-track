@@ -33,8 +33,9 @@ from tracker.bot.embeds import (
     alert_embed,
     category_name,
     item_name,
-    source_name,
+    place_name,
     status_text,
+    unreadable,
 )
 from tracker.bot.embeds import style as event_style
 from tracker.bot.render import (
@@ -47,7 +48,7 @@ from tracker.bot.render import (
 )
 from tracker.bot.views import everything_text, watch_test_embed, watches_embed
 from tracker.db.models import Listing, Product, StockObservation, Valuation, Variant, Watch
-from tracker.domain import EventKind, SourceKey, StockStatus, format_cents
+from tracker.domain import EventKind, SourceKey, StockStatus, format_cents, region_tag
 from tracker.guilds import ADMIN_FIELDS, GuildConfig, GuildStatus, config_for, list_guilds
 from tracker.guilds import update_config as save_config
 from tracker.history import ebay_trend, stock_history
@@ -68,6 +69,7 @@ from tracker.queries import (
     variant_comps,
     variant_listings,
 )
+from tracker.services.fastlane import FAST_SECONDS, SLOW_SECONDS, SNATCH_LIMIT
 from tracker.services.unifi import slug_from_url
 from tracker.sources.web import parse_money
 from tracker.updates import UpdateError
@@ -397,8 +399,23 @@ def _muted(watch: Watch, now: datetime) -> bool:
     return watch.muted_until is not None and _aware(watch.muted_until) > now
 
 
+def shown_regions(v: Viewer) -> list[str]:
+    return v.ctx.settings.unifi.shown_regions
+
+
+# What Home and Radar show by default: changes you'd act on (not ETA shuffles or flapping).
+IMPORTANT_KINDS = (
+    EventKind.BACK_IN_STOCK.value,
+    EventKind.EARLY_ACCESS.value,
+    EventKind.NEW_LISTING.value,
+    EventKind.RELISTED.value,
+    EventKind.PRICE_CHANGE.value,
+)
+EVERYTHING = "all"  # radar kind: every change
+
+
 def _place(listing: Listing) -> str:
-    return f"{source_name(listing.source)} {listing.region.upper()}"
+    return place_name(listing.source, listing.region)
 
 
 def _name(row: Any) -> str:
@@ -450,8 +467,10 @@ async def stock_embed(ctx: TrackerContext, rows: list[ListingRow]) -> discord.Em
         ranges = await price_ranges(session, [r.listing.id for r in rows[:20]], now)
     for row in rows[:20]:
         listing = row.listing
+        problem = unreadable(listing)
         lines = [
-            status_text(StockStatus(listing.status))
+            problem
+            or status_text(StockStatus(listing.status))
             + f" · {format_cents(listing.price_cents, listing.currency)}"
         ]
         if note := price_note(listing, ranges.get(listing.id)):
@@ -569,7 +588,7 @@ def event_line(event: RadarEvent, repeats: int = 1) -> str:
     emoji, label, _ = event_style(event)
     title = item_name(event.sku, event.product_name)
     name = f"[{title}]({event.url})" if event.url else title
-    where = f" {event.region.upper()}" if event.region else ""
+    where = f" {tag}" if (tag := region_tag(event.region)) else ""
     change = (
         f" · {event.old_value or '—'} → {event.new_value or '—'}"
         if event.kind in (EventKind.PRICE_CHANGE, EventKind.RESTOCK_ETA)
@@ -632,9 +651,23 @@ def open_menu(
 async def home_screen(v: Viewer, state: str = HOME) -> Screen:
     now = datetime.now(UTC)
     async with v.ctx.sessions() as session:
-        rows = await watch_rows(session, v.user_id)
+        rows = await watch_rows(session, v.user_id, regions=shown_regions(v))
         subscription = await subscription_for(session, v.user_id, v.guild_id)
-        events = collapse(await load_events(session, pending_only=False, limit=60))[:5]
+        loaded = await load_events(
+            session,
+            pending_only=False,
+            limit=60,
+            kinds=IMPORTANT_KINDS,
+            regions=shown_regions(v),
+        )
+        events = collapse(loaded)[:5]
+        upcoming = await upcoming_restocks(
+            session,
+            now.date(),
+            30,
+            regions=shown_regions(v),
+            variant_ids={r.variant.id for r in rows},
+        )
     buyable = [r for r in rows if StockStatus(r.listing.status).is_available]
     if rows:
         lines = [f"**Your watches:** {len(rows)} · {len(buyable)} in stock now"]
@@ -645,7 +678,14 @@ async def home_screen(v: Viewer, state: str = HOME) -> Screen:
         ]
     else:
         lines = ["**Your watches:** none yet. Find a product, then pick the stores to watch."]
-    lines.append(f"**Ping me for every important alert:** {everything_text(subscription)}")
+    if upcoming:
+        lines += ["", "**Restocks the store announced**"]
+        lines += [
+            f"`{r.listing.restock_eta:%b %d}` **{_name(r)}** {_place(r.listing)}"
+            for r in upcoming[:5]
+        ]
+    everything = everything_text(subscription, shown_regions(v))
+    lines += ["", f"**Ping me for every important alert:** {everything}"]
     if events:
         lines += ["", "**Latest**", *(event_line(e, n) for e, n in events)]
     embed = discord.Embed(title="FlipScout", description="\n".join(lines)[:4000], color=BLUE)
@@ -670,10 +710,14 @@ def everything_menu(subscription: Watch | None, regions: list[str]) -> Nav:
     if subscription is not None:
         chosen = parse_regions(subscription.regions)
         current = "all" if chosen is None else ",".join(sorted(chosen))
-    choices = [("off", "Off"), ("all", "Every region")]
-    choices += [(r, f"{r.upper()} stores only") for r in regions]
+    if len(regions) == 1:
+        current = "off" if current == "off" else "all"
+        choices = [("off", "Off"), ("all", "On")]
+    else:
+        choices = [("off", "Off"), ("all", "Every region")]
+        choices += [(r, f"{r.upper()} stores only") for r in regions]
     return menu(
-        f"Ping me for every important alert: {everything_text(subscription)}",
+        f"Ping me for every important alert: {everything_text(subscription, regions)}",
         "every",
         WATCHES,
         [
@@ -687,13 +731,10 @@ def everything_menu(subscription: Watch | None, regions: list[str]) -> Nav:
 async def watches_screen(v: Viewer, state: str = WATCHES) -> Screen:
     now = datetime.now(UTC)
     async with v.ctx.sessions() as session:
-        rows = by_status(await watch_rows(session, v.user_id))
+        rows = by_status(await watch_rows(session, v.user_id, regions=shown_regions(v)))
         subscription = await subscription_for(session, v.user_id, v.guild_id)
-    embed = watches_embed(rows, now, subscription)
-    items: list[discord.ui.Item[Any]] = []
-    regions = list(v.ctx.settings.unifi.regions)
-    if regions:
-        items.append(everything_menu(subscription, regions))
+    embed = watches_embed(rows, now, subscription, shown_regions(v))
+    items: list[discord.ui.Item[Any]] = [everything_menu(subscription, shown_regions(v))]
     items += open_menu(
         "Open a watch to change it…",
         WATCHES,
@@ -808,34 +849,45 @@ async def radar_screen(v: Viewer, state: str = RADAR) -> Screen:
     products: list[tuple[int, str, str | None]] = []
     if kind == UPCOMING:
         async with v.ctx.sessions() as session:
-            rows = await upcoming_restocks(session, datetime.now(UTC).date(), 30)
+            rows = await upcoming_restocks(
+                session, datetime.now(UTC).date(), 30, regions=shown_regions(v)
+            )
         rows = [r for r in rows if not region or r.listing.region == region]
         lines = [
-            f"`{r.listing.restock_eta}` **{_name(r)}** {r.listing.region.upper()} · "
+            f"`{r.listing.restock_eta:%b %d}` **{_name(r)}** {_place(r.listing)} · "
             f"{format_cents(r.listing.price_cents, r.listing.currency)}"
             for r in rows
         ]
         title = f"Radar · announced restocks, next 30 days ({len(rows)})"
         empty = "No restock dates announced."
         products = [
-            (r.variant.id, f"{_name(r)} · {r.listing.region.upper()}", r.product.name) for r in rows
+            (r.variant.id, f"{_name(r)} · {_place(r.listing)}", r.product.name) for r in rows
         ]
     else:
+        if kind == EVERYTHING:
+            kinds: list[str] | None = None
+        elif kind:
+            kinds = [kind]
+        else:
+            kinds = list(IMPORTANT_KINDS)
         async with v.ctx.sessions() as session:
             loaded = await load_events(
-                session, pending_only=False, limit=200, kinds=[kind] if kind else None
+                session, pending_only=False, limit=200, kinds=kinds, regions=shown_regions(v)
             )
         grouped = collapse([e for e in loaded if not region or (e.region or "") == region])[:15]
         events = [e for e, _ in grouped]
         lines = [event_line(e, n) for e, n in grouped]
-        label = KIND_STYLE[EventKind(kind)][1] if kind in EventKind else "Everything"
+        if kind in EventKind:
+            label = KIND_STYLE[EventKind(kind)][1]
+        else:
+            label = "Everything" if kind == EVERYTHING else "Important changes"
         title = f"Radar · {label}"
         empty = "Nothing on the radar yet."
         variants = await _variant_ids(v.ctx, {e.listing_id for e in events if e.listing_id})
         products = [
             (
                 variants[e.listing_id],
-                f"{item_name(e.sku, e.product_name)} · {(e.region or '').upper()}",
+                f"{item_name(e.sku, e.product_name)} · {place_name(e.source, e.region)}",
                 e.product_name,
             )
             for e in events
@@ -845,14 +897,19 @@ async def radar_screen(v: Viewer, state: str = RADAR) -> Screen:
         title += f" · {region.upper()}"
     embed = discord.Embed(title=title, description=paginate(lines) or empty, color=BLUE)
     items = open_menu("Open a product…", state, products, row=0)
-    kinds = [option("Everything", "*", default=not kind)]
-    kinds += [
+    shows = [
+        option("Important changes", "*", "Restocks, Early Access, new and price", default=not kind),
+        option(
+            "Everything", EVERYTHING, "Also sold out and restock dates", default=kind == EVERYTHING
+        ),
+    ]
+    shows += [
         option(label, k.value, default=k.value == kind) for k, (_, label, _) in KIND_STYLE.items()
     ]
-    kinds.append(option("Upcoming restocks", UPCOMING, "Announced dates", default=kind == UPCOMING))
-    items.append(menu("What to show…", "rk", state, kinds, row=1))
-    regions = list(v.ctx.settings.unifi.regions)
-    if regions:
+    shows.append(option("Upcoming restocks", UPCOMING, "Announced dates", default=kind == UPCOMING))
+    items.append(menu("What to show…", "rk", state, shows, row=1))
+    regions = shown_regions(v)
+    if len(regions) > 1:
         items.append(
             menu(
                 "Region…",
@@ -907,13 +964,13 @@ def _watching_label(count: int) -> str:
 async def product_screen(v: Viewer, state: str) -> Screen:
     variant_id, back = split_product(state)
     async with v.ctx.sessions() as session:
-        rows = await variant_listings(session, variant_id)
+        rows = await variant_listings(session, variant_id, regions=shown_regions(v))
     if not rows:
         embed = discord.Embed(title="That product is gone", color=GREY)
         return Screen(embed, nav_row(v, tab_of(back), back))
     now = datetime.now(UTC)
     watches = await _my_watches(v, [r.listing.id for r in rows])
-    regions = list(v.ctx.settings.unifi.regions)
+    regions = shown_regions(v)
     rows.sort(
         key=lambda r: (
             r.listing.id not in watches,
@@ -967,7 +1024,39 @@ async def product_screen(v: Viewer, state: str) -> Screen:
         items.append(button("Send a test alert", "test", state, row=2))
     if v.owner:
         items.append(button("Record a sale…", "sale", state, row=3))
+        snatchable = [r for r in rows if _snatchable(r.listing)]
+        if snatchable:
+            on = any(r.listing.snatch for r in snatchable)
+            if on and (note := await snatch_note(v)):
+                embed.description = f"{embed.description}\n{note}"
+            items.append(
+                button(
+                    "⚡ Snatch: on" if on else "⚡ Snatch",
+                    "snatch",
+                    state,
+                    row=3,
+                    style=discord.ButtonStyle.success if on else discord.ButtonStyle.secondary,
+                )
+            )
     return Screen(embed, items + nav_row(v, tab_of(back), back))
+
+
+def _snatchable(listing: Listing) -> bool:
+    """The drop detector checks the Ubiquiti US store."""
+    return listing.source == SourceKey.UNIFI.value and listing.region == "us"
+
+
+async def snatch_note(v: Viewer) -> str | None:
+    lane = getattr(v.ctx, "fastlane", None)
+    if lane is None:
+        return None
+    status = await lane.status()
+    if status.fast:
+        return f"⚡ **Snatch list:** checked every {FAST_SECONDS:g} seconds now ({status.reason})"
+    return (
+        f"⚡ **Snatch list:** checked every {SLOW_SECONDS:g} seconds now, every "
+        f"{FAST_SECONDS:g} on weekdays 6am–6pm Pacific and near its restock date"
+    )
 
 
 async def profit_screen(v: Viewer, state: str, *, refresh: bool = False) -> Screen:
@@ -1131,7 +1220,7 @@ async def health_screen(v: Viewer, state: str = "health") -> Screen:
     v.need(Role.SERVER_ADMIN)
     now = datetime.now(UTC)
     async with v.ctx.sessions() as session:
-        stats = await tracker_stats(session, now)
+        stats = await tracker_stats(session, now, regions=shown_regions(v))
     embed = discord.Embed(title="Health", color=0x57F287, timestamp=now)
     embed.add_field(name="Uptime", value=str(now - v.ctx.started_at).split(".")[0])
     version = v.ctx.settings.updates.version.strip()
@@ -1151,6 +1240,18 @@ async def health_screen(v: Viewer, state: str = "health") -> Screen:
         when = "running" if job.running else f"next in {max(0, int(job.next_run - mono))}s"
         health = f" · ⚠️ {job.failures} failures" if job.failures else ""
         jobs.append(f"`{job.name}` {job.runs} runs · {when}{health}")
+    lane = getattr(v.ctx, "fastlane", None)
+    if lane is not None:
+        status = await lane.status()
+        every = FAST_SECONDS if status.fast else SLOW_SECONDS
+        embed.add_field(
+            name="Drop detector",
+            value=(
+                f"{status.items}/{SNATCH_LIMIT} products · every {every:g}s ({status.reason})\n"
+                f"{lane.checks} checks since start · {lane.changes} came back changed"
+            ),
+            inline=False,
+        )
     embed.add_field(name="Jobs", value="\n".join(jobs)[:1024] or "—", inline=False)
     items = [
         button("◀ Back", "back", "tools", row=4),
@@ -1446,7 +1547,7 @@ async def mute_all(v: Viewer, state: str, values: list[Any]) -> None:
 async def _product_rows(v: Viewer, state: str) -> list[ListingRow]:
     variant_id, _ = split_product(state)
     async with v.ctx.sessions() as session:
-        rows = await variant_listings(session, variant_id)
+        rows = await variant_listings(session, variant_id, regions=shown_regions(v))
     if not rows:
         raise Denied("That product is gone.")
     return rows
@@ -1802,6 +1903,40 @@ async def toggle_valuations(v: Viewer, state: str, values: list[Any]) -> None:
         else "Valuations are hidden here now."
     )
     await _configure(v, {"show_valuations": show}, state, note)
+
+
+@handles("snatch")
+async def snatch(v: Viewer, state: str, values: list[Any]) -> None:
+    v.need(Role.OWNER)
+    rows = [r for r in await _product_rows(v, state) if _snatchable(r.listing)]
+    if not rows:
+        raise Denied("The drop detector checks the Ubiquiti US store only.")
+    on = not any(r.listing.snatch for r in rows)
+    ids = [r.listing.id for r in rows]
+    watching = await _my_watches(v, ids)
+    async with v.ctx.sessions() as session, session.begin():
+        if on:
+            listed = await session.scalar(
+                select(func.count(func.distinct(Listing.variant_id))).where(
+                    Listing.snatch.is_(True)
+                )
+            )
+            if (listed or 0) >= SNATCH_LIMIT:
+                raise Denied(
+                    f"The snatch list holds {SNATCH_LIMIT} products so each one can be checked "
+                    "every few seconds. Take one off first."
+                )
+        for listing in await session.scalars(select(Listing).where(Listing.id.in_(ids))):
+            listing.snatch = on
+        if on and (new := [i for i in ids if i not in watching]):
+            await add_watches(session, v.user_id, new, None, v.guild_id)
+    note = (
+        "⚡ On the snatch list: you're pinged the moment it's back."
+        if on
+        else "Off the snatch list: back to normal checks."
+    )
+    await v.show(await product_screen(v, state), content=note)
+    await v.audit("snatch.on" if on else "snatch.off", rows[0].variant.sku)
 
 
 @handles("upd")

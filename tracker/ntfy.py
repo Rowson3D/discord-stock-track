@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tracker.alerts import AlertRouter
 from tracker.db.models import Watch, WatchRule
-from tracker.domain import EventKind, format_cents
+from tracker.domain import EventKind, format_cents, region_tag
 from tracker.outbox import RadarEvent
 from tracker.settings import ENV_FILE, NtfySettings, Settings
 from tracker.sources.web import SOURCE_NAMES, SourceKey
@@ -51,7 +51,8 @@ def _store(event: RadarEvent) -> str:
         name = SOURCE_NAMES[SourceKey(event.source or "")]
     except ValueError:
         name = event.source or "Store"
-    return f"{name} {event.region.upper()}" if event.region else name
+    tag = region_tag(event.region)
+    return f"{name} {tag}" if tag else name
 
 
 def ntfy_message(event: RadarEvent, topic: str) -> dict[str, Any]:

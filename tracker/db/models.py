@@ -114,6 +114,8 @@ class Listing(Base):
     delisted_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     consecutive_unknowns: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    # On the drop detector's list: checked every few seconds (tracker/services/fastlane.py).
+    snatch: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
 
     variant: Mapped[Variant] = relationship(back_populates="listings")
 

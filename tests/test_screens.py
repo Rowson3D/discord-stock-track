@@ -256,7 +256,7 @@ async def test_picking_stores_watches_and_unwatches(bot):
 
     pressed = await press(bot, "wsel", state, [str(listings["us"])])
     assert pressed.shown["content"] == "🔔 Watching 1 store(s)."
-    assert "**Watching** Ubiquiti Store US" in pressed.shown["embed"].description
+    assert "**Watching** Ubiquiti Store" in pressed.shown["embed"].description
     labels = [getattr(i, "label", None) for i in controls(pressed.shown["view"])]
     assert {"Target price…", "Mute 24h", "Send a test alert"} <= set(labels)
 

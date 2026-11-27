@@ -90,7 +90,7 @@ async def test_owner_watch_rings_with_urgent_priority(sessions):
     assert body["tags"] == ["green_circle"]
     assert body["click"] == "https://store.ui.com/us/en/products/u7-pro"
     assert body["actions"][0]["url"] == body["click"]
-    assert "U7-Pro · $189.00 · Ubiquiti Store US" in body["message"]
+    assert "U7-Pro · $189.00 · Ubiquiti Store" in body["message"]
 
 
 async def test_only_what_the_owner_chose(sessions):

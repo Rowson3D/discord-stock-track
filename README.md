@@ -1,7 +1,9 @@
 # Tracker Network Stock
 
-UniFi stock and launch radar with Discord alerts. It tracks the **entire Ubiquiti store** in
-every region you choose, records full stock and price history, and pings the right people when
+<img src="docs/brand/icon.svg" alt="FlipScout" width="72" align="right">
+
+UniFi stock and launch radar with Discord alerts. It tracks the **entire Ubiquiti US store** (other
+regions are optional), records full stock and price history, and pings the right people when
 something worth buying appears.
 
 > Building toward a full resale-intelligence platform (web dashboard and P&L ledger next).
@@ -16,10 +18,18 @@ something worth buying appears.
   minute and trigger immediate product checks. "Hot" listings are re-checked about every minute:
   watched, high priority, Early Access, coming soon, restock due within 3 days, or recently sold
   out.
+- **Drop detector.** Put up to 5 products on the **snatch list** (**⚡ Snatch** on a product,
+  owner only) and they're checked every 5 seconds on weekdays 6am–6pm Pacific (when most US
+  restocks land), within a day of the store's restock date, and for 10 minutes after any US
+  restock; every 20 seconds otherwise. Each check asks the store "has this changed?", which costs
+  it an empty `304` reply until something does. See
+  [tracker/services/fastlane.py](tracker/services/fastlane.py).
 - **Launch radar.** Back in stock, sold out, price changes, restock ETAs, Early Access, new
   listings, delisted and relisted. Every event is stored and visible under **Radar**.
-- **Multi-region.** `us`, `ca`, `uk`, `eu`. The CA store sells US SKUs in CAD, so the same variant
-  is linked across regions.
+- **US by default, other regions optional.** Set `UNIFI_STORE_REGIONS=us,ca,uk,eu` to also
+  track those stores; the CA store sells US SKUs in CAD, so the same variant is linked across
+  regions. Screens only show the regions you track, and only non-US stores carry a region
+  label.
 - **Smart alerts.** Important events go to an alert channel with pings: watchers (optionally only
   below a max price), global subscribers, and an optional role. Routine events go to a radar
   channel, batched into digests. Flapping is suppressed. Alerts survive restarts (durable outbox).
@@ -150,8 +160,12 @@ The full map of every screen and button is [docs/navigation.svg](docs/navigation
   price…**, **Mute 24h**, and **Send a test alert** appear. **Open at store**, **Profit** (where
   valuations are shown), **Check now** (server admins), and **Record a sale…** (owner) are there
   too.
-- **Watches** lists everything you watch, with the **ping me for every important alert** switch
-  (off, every region, or one region) and **Mute all**.
+- **Watches** lists everything you watch (⚡ marks the snatch list), with the **ping me for every
+  important alert** switch and **Mute all**. A store page that can't be read says so instead of
+  showing an old status and price.
+- **Home** shows your watches in stock, restock dates the store announced for your watches, and
+  the latest important changes. **Radar** shows important changes (restocks, Early Access, new
+  listings, price changes) by default; **Everything** adds sold-outs and restock-date shuffles.
 - **Flips** and **Radar** filter with menus (buyable now, minimum profit, category; event kind,
   including upcoming restock dates, and region) and open any item in the list.
 - **Server settings** (admins) change with menus and save at once: alerts and radar channels,
@@ -232,7 +246,7 @@ Highlights:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `UNIFI_STORE_REGIONS` | `us,ca,uk,eu` | Regions to track; a product vanishing from one region first is an early end-of-life signal |
+| `UNIFI_STORE_REGIONS` | `us` | Ubiquiti stores to track (`us,ca,uk,eu` for all four; a product vanishing from one region first is an early end-of-life signal) |
 | `TRACKER_MONITOR_CATALOG_INTERVAL_SECONDS` | `300` | Full catalog crawl |
 | `TRACKER_MONITOR_HOT_POLL_INTERVAL_SECONDS` | `60` | Re-check interval for hot listings |
 | `DISCORD_MENTION_KINDS` | `back_in_stock,early_access,new_listing,relisted` | Which events ping |

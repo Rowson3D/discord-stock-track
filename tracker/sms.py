@@ -9,7 +9,7 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tracker.alerts import AlertRouter
-from tracker.domain import format_cents
+from tracker.domain import format_cents, region_tag
 from tracker.guilds import GuildConfig
 from tracker.outbox import RadarEvent
 from tracker.settings import SmsSettings
@@ -24,8 +24,8 @@ def sms_body(event: RadarEvent) -> str:
     parts = [f"{headline}: {event.sku or event.product_name or 'item'}"]
     if event.price_cents is not None:
         parts.append(format_cents(event.price_cents, event.currency))
-    if event.region:
-        parts.append(event.region.upper())
+    if tag := region_tag(event.region):
+        parts.append(tag)
     if event.url:
         parts.append(event.url)
     return " | ".join(parts)[:320]

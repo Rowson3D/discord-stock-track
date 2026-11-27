@@ -246,9 +246,9 @@ class UnifiSettings(BaseSettings):
     model_config = _config("UNIFI_STORE_")
 
     base_url: str = "https://store.ui.com"
-    # All four stores by default: a product vanishing from one region first is an early
-    # end-of-life signal (see docs/GRAILS.md).
-    regions: CommaList = Field(default_factory=lambda: ["us", "ca", "uk", "eu"])
+    # The US store only. Add ca, uk or eu to also crawl those (a product vanishing from one
+    # region first is an early end-of-life signal; see docs/GRAILS.md).
+    regions: CommaList = Field(default_factory=lambda: ["us"])
     language: str = "en"
     # Category slugs to crawl in addition to those discovered from the store home page.
     extra_categories: CommaList = Field(default_factory=list)
@@ -262,6 +262,11 @@ class UnifiSettings(BaseSettings):
     @classmethod
     def _strip_slash(cls, value: str) -> str:
         return value.rstrip("/")
+
+    @property
+    def shown_regions(self) -> list[str]:
+        """The regions screens show: the crawled stores plus the US (where retailers are)."""
+        return list(dict.fromkeys(["us", *self.regions]))
 
     def origin(self, region: str) -> str:
         if region == "us":

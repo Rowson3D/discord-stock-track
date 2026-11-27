@@ -33,6 +33,7 @@ from tracker.market.ebay import EbayClient
 from tracker.market.service import MarketService
 from tracker.outbox import EventDispatcher, EventSink, LoggingSink
 from tracker.scheduler import Scheduler
+from tracker.services.fastlane import FastLane
 from tracker.services.retail import RetailService
 from tracker.services.unifi import UnifiService
 from tracker.settings import Settings
@@ -265,6 +266,9 @@ async def _run_locked(
                     stop.set()
 
             scheduler.add("db:schema-guard", 60.0, schema_guard, initial_delay=60.0)
+            fastlane = FastLane(sessions, settings.unifi, dispatcher)
+            # Ticks every second; each product on the snatch list is checked every 5 or 20s.
+            scheduler.add("unifi:snatch", 1.0, fastlane.tick, initial_delay=15.0, jitter=0)
             await auto_import_legacy(settings, sessions, store)
 
             router = AlertRouter()
@@ -282,6 +286,7 @@ async def _run_locked(
                     market,
                     dispatcher,
                     scheduler,
+                    fastlane,
                 )
             else:
                 logger.warning("DISCORD_BOT_TOKEN not set: running headless (events go to the log)")
@@ -306,6 +311,7 @@ async def _run_locked(
             try:
                 await _run_until_stopped(scheduler, bot, settings, stop, panel)
             finally:
+                await fastlane.close()
                 if ebay is not None:
                     await ebay.aclose()
                 if bestbuy is not None:
@@ -359,6 +365,7 @@ def _build_bot(
     market: MarketService,
     dispatcher: EventDispatcher,
     scheduler: Scheduler,
+    fastlane: FastLane | None = None,
 ) -> TrackerBot:
     # Imported lazily so headless runs and tests don't need a Discord client.
     from tracker.bot.cleanup import cleanup_messages
@@ -374,6 +381,7 @@ def _build_bot(
         dispatcher=dispatcher,
         scheduler=scheduler,
         started_at=datetime.now(UTC),
+        fastlane=fastlane,
     )
     bot = TrackerBot(context)
     if not settings.discord.channel_id:

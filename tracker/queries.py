@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
@@ -66,7 +67,11 @@ async def resolve_variant(session: AsyncSession, text: str) -> Variant | None:
 
 
 async def variant_listings(
-    session: AsyncSession, variant_id: int, region: str | None = None
+    session: AsyncSession,
+    variant_id: int,
+    region: str | None = None,
+    *,
+    regions: Collection[str] | None = None,
 ) -> list[ListingRow]:
     stmt = (
         select(Listing, Variant, Product)
@@ -77,6 +82,8 @@ async def variant_listings(
     )
     if region:
         stmt = stmt.where(Listing.region == region)
+    if regions is not None:
+        stmt = stmt.where(Listing.region.in_(list(regions)))
     return [ListingRow(*row) for row in (await session.execute(stmt)).all()]
 
 
@@ -219,7 +226,14 @@ async def recent_observations(
     )
 
 
-async def upcoming_restocks(session: AsyncSession, today: date, days: int) -> list[ListingRow]:
+async def upcoming_restocks(
+    session: AsyncSession,
+    today: date,
+    days: int,
+    *,
+    regions: Collection[str] | None = None,
+    variant_ids: Collection[int] | None = None,
+) -> list[ListingRow]:
     stmt = (
         select(Listing, Variant, Product)
         .join(Variant, Listing.variant_id == Variant.id)
@@ -232,6 +246,10 @@ async def upcoming_restocks(session: AsyncSession, today: date, days: int) -> li
         )
         .order_by(Listing.restock_eta, Variant.sku)
     )
+    if regions is not None:
+        stmt = stmt.where(Listing.region.in_(list(regions)))
+    if variant_ids is not None:
+        stmt = stmt.where(Variant.id.in_(list(variant_ids)))
     return [ListingRow(*row) for row in (await session.execute(stmt)).all()]
 
 
@@ -245,12 +263,17 @@ class TrackerStats:
     events_24h: int
 
 
-async def tracker_stats(session: AsyncSession, now: datetime) -> TrackerStats:
-    rows = await session.execute(
+async def tracker_stats(
+    session: AsyncSession, now: datetime, *, regions: Collection[str] | None = None
+) -> TrackerStats:
+    stmt = (
         select(Listing.region, Listing.status, func.count(), func.max(Listing.last_checked_at))
         .where(Listing.delisted_at.is_(None))
         .group_by(Listing.region, Listing.status)
     )
+    if regions is not None:
+        stmt = stmt.where(Listing.region.in_(list(regions)))
+    rows = await session.execute(stmt)
     counts: dict[tuple[str, str], int] = {}
     last: dict[str, datetime | None] = {}
     for region, status, count, newest in rows.all():

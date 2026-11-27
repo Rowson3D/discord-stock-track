@@ -6,7 +6,7 @@ from datetime import datetime
 
 import discord
 
-from tracker.bot.embeds import item_name, source_name, status_text
+from tracker.bot.embeds import item_name, place_name, status_text
 from tracker.db.models import Listing, MarketComp, Product, Valuation, Variant
 from tracker.domain import StockStatus, format_cents
 from tracker.history import EbayTrend, StockHistory, humanize
@@ -27,7 +27,7 @@ def row_line(row: ListingRow) -> str:
     listing = row.listing
     parts = [
         f"**{item_name(row.variant.sku, row.product.name)}**",
-        f"{source_name(listing.source)} {listing.region.upper()}",
+        place_name(listing.source, listing.region),
         status_text(StockStatus(listing.status)),
         format_cents(listing.price_cents, listing.currency),
     ]
@@ -170,7 +170,20 @@ def value_embed(
     label = item_name(variant.sku, name, 256)
     title = f"💰 {label}" + (f" · {name}" if name and label != name else "")
     embed = discord.Embed(title=title[:256], color=0xF1C40F)
-    if valuation is None or valuation.basis is None:
+    if valuation is not None and valuation.basis is None and valuation.flip_basis == "scarcity":
+        # What Flips ranks it by: eBay asking prices while the store was sold out.
+        v = valuation
+        roi = f"{v.flip_roi:.0%}" if v.flip_roi is not None else "—"
+        embed.description = (
+            f"Buy **{format_cents(v.retail_cents)}** "
+            f"({'in stock' if v.available else 'not available now'}) → eBay asking "
+            f"**~{format_cents(v.scarcity_resale_cents)}** while it was sold out "
+            f"{v.scarcity_days}d → net **{format_cents(v.flip_net_cents)}** ({roi}) · "
+            f"{v.flip_confidence} confidence\n\n"
+            f"That's an estimate from asking prices, not sales: there aren't "
+            f"{settings.min_comps} sold comps yet. Record a sale to firm it up."
+        )
+    elif valuation is None or valuation.basis is None:
         embed.description = (
             f"Not enough comps yet ({settings.min_comps} needed). "
             "Comps come from eBay or Record a sale."

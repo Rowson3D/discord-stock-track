@@ -50,7 +50,7 @@ async def test_dispatch_publishes_once_with_context(sessions):
     assert event.status is StockStatus.OUT_OF_STOCK
     assert event.url == "https://store.ui.com/us/en/products/u7-pro"
     summary = event.summary()
-    assert summary.startswith("SOLD OUT · U7-Pro (Access Point U7 Pro) · US · $189.00")
+    assert summary.startswith("SOLD OUT · U7-Pro (Access Point U7 Pro) · $189.00")
 
 
 async def test_failed_sink_leaves_events_pending(sessions):

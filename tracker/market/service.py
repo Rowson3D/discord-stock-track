@@ -33,7 +33,7 @@ from tracker.db.models import (
     Variant,
     Watch,
 )
-from tracker.domain import EventKind, Priority, StockStatus, format_cents
+from tracker.domain import EventKind, Priority, SourceKey, StockStatus, format_cents
 from tracker.history import scarcity_stats
 from tracker.market.ebay import EbayClient, EbayError, EbayItem
 from tracker.market.matching import MatchResult, VariantMatcher, base_sku
@@ -166,6 +166,9 @@ class MarketService:
                     )
                     .join(Listing, Listing.variant_id == Variant.id)
                     .join(Product, Variant.product_id == Product.id)
+                    # eBay matching is by Ubiquiti SKU; a retailer's own id ("AMZN-B0…") finds
+                    # nothing, so those aren't searched.
+                    .where(Listing.source == SourceKey.UNIFI.value)
                 )
             ).all()
 

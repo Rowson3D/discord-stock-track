@@ -86,6 +86,16 @@ class ListingSnapshot:
     quantity: int | None = None
 
 
+HOME_REGION = "us"
+
+
+def region_tag(region: str | None) -> str:
+    """How a store's region is labeled: nothing for the home (US) store, "CA" for the others."""
+    if not region or region.lower() == HOME_REGION:
+        return ""
+    return region.upper()
+
+
 def format_cents(cents: int | None, currency: str | None = "USD") -> str:
     if cents is None:
         return "—"

@@ -222,6 +222,18 @@ def _classify(text: str, in_stock: tuple[str, ...], out: tuple[str, ...], low: t
     return StockStatus.UNKNOWN
 
 
+_AMAZON_PRICE = ", ".join(
+    f"{box} .a-price .a-offscreen"
+    for box in (
+        "#corePriceDisplay_desktop_feature_div",
+        "#corePrice_feature_div",
+        "#corePrice_desktop",
+        "#apex_desktop",
+        "#buybox",
+    )
+)
+
+
 def _fallback(soup: BeautifulSoup, source: SourceKey) -> dict[str, Any]:
     if source is SourceKey.AMAZON:
         availability = _text(soup, "#availability") or ""
@@ -233,10 +245,13 @@ def _fallback(soup: BeautifulSoup, source: SourceKey) -> dict[str, Any]:
         )
         if not status.is_known and soup.select_one("#add-to-cart-button"):
             status = StockStatus.IN_STOCK
+        # Only the buy box's price: elsewhere on the page are other sellers, accessories and
+        # sponsored items (a sold-out PS5 page once read as $79). Sold out means no price.
+        price = parse_money(_text(soup, _AMAZON_PRICE))
         return {
             "name": _text(soup, "#productTitle"),
             "status": status,
-            "price_cents": parse_money(_text(soup, ".a-price .a-offscreen")),
+            "price_cents": None if status is StockStatus.OUT_OF_STOCK else price,
         }
     # Best Buy / B&H / Newegg: scope text to the buy box when we can find it.
     buy_box = (

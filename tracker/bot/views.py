@@ -10,9 +10,9 @@ from typing import TYPE_CHECKING, Any
 
 import discord
 
-from tracker.bot.embeds import item_name, source_name, status_text
+from tracker.bot.embeds import item_name, place_name, status_text, unreadable
 from tracker.db.models import Watch
-from tracker.domain import StockStatus, format_cents
+from tracker.domain import StockStatus, format_cents, region_tag
 from tracker.guilds import config_for
 from tracker.queries import toggle_watch
 from tracker.watching import ALERT_KEYS, WatchRow, parse_kinds, parse_regions
@@ -99,12 +99,16 @@ def _aware(value: datetime) -> datetime:
 
 def watch_line(row: WatchRow, now: datetime) -> str:
     listing, watch = row.listing, row.watch
+    snatch = "⚡ " if getattr(listing, "snatch", False) else ""
     parts = [
-        f"**{item_name(row.variant.sku, row.product.name)}**",
-        f"{source_name(listing.source)} {listing.region.upper()}",
-        status_text(StockStatus(listing.status)),
-        format_cents(listing.price_cents, listing.currency),
+        f"{snatch}**{item_name(row.variant.sku, row.product.name)}**",
+        place_name(listing.source, listing.region),
     ]
+    if problem := unreadable(listing):
+        parts.append(problem)
+    else:
+        parts.append(status_text(StockStatus(listing.status)))
+        parts.append(format_cents(listing.price_cents, listing.currency))
     if watch.max_price_cents is not None:
         parts.append(f"ping ≤ {format_cents(watch.max_price_cents, listing.currency)}")
     chosen = parse_kinds(watch.kinds)
@@ -117,10 +121,12 @@ def watch_line(row: WatchRow, now: datetime) -> str:
     return " · ".join(parts)
 
 
-def everything_text(subscription: Watch | None) -> str:
+def everything_text(subscription: Watch | None, shown: list[str] | None = None) -> str:
     """How 'ping me for everything' is set, in a few words."""
     if subscription is None:
         return "off"
+    if shown is not None and len(shown) == 1:
+        return "on"
     regions = parse_regions(subscription.regions)
     if regions is None:
         return "every region"
@@ -128,7 +134,10 @@ def everything_text(subscription: Watch | None) -> str:
 
 
 def watches_embed(
-    rows: list[WatchRow], now: datetime, subscription: Watch | None = None
+    rows: list[WatchRow],
+    now: datetime,
+    subscription: Watch | None = None,
+    shown: list[str] | None = None,
 ) -> discord.Embed:
     lines = [watch_line(r, now) for r in rows[:_WATCHES_SHOWN]]
     if len(rows) > _WATCHES_SHOWN:
@@ -138,7 +147,7 @@ def watches_embed(
             "Nothing yet. Use **Find a product** on Home (or `/stock`), then pick the stores "
             "to watch."
         )
-    lines += ["", f"**Ping me for every important alert:** {everything_text(subscription)}"]
+    lines += ["", f"**Ping me for every important alert:** {everything_text(subscription, shown)}"]
     embed = discord.Embed(
         title=f"Your watches ({len(rows)})", description="\n".join(lines)[:4000], color=0x5865F2
     )
@@ -174,7 +183,7 @@ def watch_test_embed(test: WatchTest, link: str | None, error: str | None) -> di
     if any(item.sms for item in test.coverage):
         lines += ["", "📱 SMS goes out for these types too (not sent for tests)."]
     embed = discord.Embed(
-        title=f"Test: {test.sku} · {test.region.upper()}",
+        title=f"Test: {test.sku}" + (f" · {tag}" if (tag := region_tag(test.region)) else ""),
         description="\n".join(lines)[:4000],
         color=0x57F287 if selected.pings else 0xFEE75C,
     )

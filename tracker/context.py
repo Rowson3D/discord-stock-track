@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tracker.market.service import MarketService
 from tracker.outbox import EventDispatcher
 from tracker.scheduler import Scheduler
+from tracker.services.fastlane import FastLane
 from tracker.services.retail import RetailService
 from tracker.services.unifi import UnifiService
 from tracker.settings import Settings
@@ -25,3 +26,4 @@ class TrackerContext:
     dispatcher: EventDispatcher
     scheduler: Scheduler
     started_at: datetime
+    fastlane: FastLane | None = None

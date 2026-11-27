@@ -90,13 +90,25 @@ def test_jsonld_graph_and_aggregate_offer_prefers_available_offer():
 
 def test_amazon_fallback_without_jsonld():
     html = """<html><body><span id="productTitle"> U7 Pro </span>
-    <span class="a-price"><span class="a-offscreen">$189.00</span></span>
+    <div class="sponsored"><span class="a-price"><span class="a-offscreen">$9.99</span></span></div>
+    <div id="corePriceDisplay_desktop_feature_div">
+    <span class="a-price"><span class="a-offscreen">$189.00</span></span></div>
     <div id="availability"><span>Only 3 left in stock - order soon.</span></div></body></html>"""
     snap = parse_retail_page(html, AMZN, SourceKey.AMAZON)
     assert snap.status is StockStatus.LOW_STOCK
-    assert snap.price_cents == 18900
+    assert snap.price_cents == 18900  # the buy box, not the sponsored item above it
     assert snap.product_name == "U7 Pro"
     assert snap.sku == "AMZN-B0ABCDEFGH"
+
+
+def test_a_sold_out_amazon_page_has_no_price():
+    # A sold-out page still shows prices: other sellers, accessories, sponsored items.
+    html = """<html><body><span id="productTitle">PS5 Pro</span>
+    <span class="a-price"><span class="a-offscreen">$79.00</span></span>
+    <div id="availability"><span>Currently unavailable.</span></div></body></html>"""
+    snap = parse_retail_page(html, AMZN, SourceKey.AMAZON)
+    assert snap.status is StockStatus.OUT_OF_STOCK
+    assert snap.price_cents is None
 
 
 def test_buy_box_fallback_ignores_text_elsewhere_on_page():
@@ -207,6 +219,8 @@ async def test_retail_service_polls_due_and_backs_off(sessions: async_sessionmak
         listing = await session.get(Listing, listing_id)
         assert listing.consecutive_unknowns == 11  # the initial add_url fetch counts too
         assert effective_interval(settings, listing) == 1200  # 120s x 10 backoff
+        listing.consecutive_unknowns = 691  # Best Buy, blocked for weeks
+        assert effective_interval(settings, listing) == 4 * 3600
 
     fetch.result = url_snapshot(BBY, SourceKey.BESTBUY, status=StockStatus.IN_STOCK, price_cents=1)
     now[0] += timedelta(hours=1)

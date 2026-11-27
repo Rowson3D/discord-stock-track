@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 
 import discord
 
 from tracker.alerts import AlertPlan, is_price_drop
-from tracker.domain import EventKind, SourceKey, StockStatus, format_cents
+from tracker.domain import EventKind, SourceKey, StockStatus, format_cents, region_tag
 from tracker.outbox import RadarEvent
 from tracker.sources.web import SOURCE_NAMES
 
@@ -51,6 +52,12 @@ def source_name(source: str | None) -> str:
         return source or "?"
 
 
+def place_name(source: str | None, region: str | None) -> str:
+    """'Ubiquiti Store' for the US store, 'Ubiquiti Store CA' for the others."""
+    tag = region_tag(region)
+    return f"{source_name(source)} {tag}" if tag else source_name(source)
+
+
 # Retailer listings get a SKU made from the store's own id (AMZN-B0…, BBY-661…): fine as a key,
 # unreadable in a list. Those are shown by product name instead.
 _STORE_IDS = (
@@ -60,6 +67,19 @@ _STORE_IDS = (
     "NEWEGG-",
     *(f"{source.value.upper()}-" for source in SourceKey if source is not SourceKey.UNIFI),
 )
+
+
+# After this many unreadable checks in a row, the stored status and price are old news.
+UNREADABLE_AFTER = 5
+
+
+def unreadable(listing: Any) -> str | None:
+    """Why a listing's status can't be trusted right now, or None when it can."""
+    if listing.consecutive_unknowns < UNREADABLE_AFTER:
+        return None
+    if listing.source == SourceKey.BESTBUY.value:
+        return "⚠️ Best Buy blocks page checks (a free Best Buy API key fixes it)"
+    return f"⚠️ Can't read the store page ({listing.consecutive_unknowns} tries)"
 
 
 def item_name(sku: str | None, name: str | None, limit: int = 40) -> str:
@@ -86,8 +106,8 @@ def alert_content(plan: AlertPlan) -> str:
     parts = [f"{emoji} **{label}**", item_name(event.sku, event.product_name)]
     if price:
         parts.append(price)
-    if event.region and event.region != "us":
-        parts.append(event.region.upper())
+    if tag := region_tag(event.region):
+        parts.append(tag)
     if event.profit_text:
         parts.append(event.profit_text)
     line = " · ".join(parts)
@@ -134,8 +154,8 @@ def alert_embed(event: RadarEvent) -> discord.Embed:
             inline=False,
         )
     store = source_name(event.source)
-    if event.region:
-        store += f" · {event.region.upper()}"
+    if tag := region_tag(event.region):
+        store += f" · {tag}"
     embed.set_footer(text=f"{store} · {category_name(event.category)}")
     return embed
 
@@ -151,7 +171,7 @@ def digest_embed(events: Sequence[RadarEvent], *, limit: int = 25) -> discord.Em
             if event.kind in (EventKind.PRICE_CHANGE, EventKind.RESTOCK_ETA)
             else format_cents(event.price_cents, event.currency)
         )
-        region = f" {event.region.upper()}" if event.region else ""
+        region = f" {tag}" if (tag := region_tag(event.region)) else ""
         link = f"[{name}]({event.url})" if event.url else name
         lines.append(f"{emoji} {label} · {link}{region} · {detail}")
     if len(events) > limit:
