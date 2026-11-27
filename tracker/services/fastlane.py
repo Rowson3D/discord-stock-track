@@ -111,6 +111,8 @@ class FastLane:
         self._wave_until: datetime | None = None
         self.checks = 0
         self.changes = 0
+        self._summary_at = monotonic()
+        self._summary_counts = (0, 0)
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -203,7 +205,24 @@ class FastLane:
             async with self._sessions() as session, session.begin():
                 await Ingestor(session).ingest(changed, observed_at=self._clock())
             await self._dispatcher.dispatch()
+        self._log_summary(len(targets))
         return len(changed)
+
+    def _log_summary(self, items: int) -> None:
+        """One line every 10 minutes, so the log shows the lane is alive."""
+        mono = self._mono()
+        if mono - self._summary_at < 600:
+            return
+        checks, changes = self._summary_counts
+        logger.info(
+            "Drop detector: %d product(s), %d checks in the last %d min (%d changed)",
+            items,
+            self.checks - checks,
+            round((mono - self._summary_at) / 60),
+            self.changes - changes,
+        )
+        self._summary_at = mono
+        self._summary_counts = (self.checks, self.changes)
 
     async def check(self, slug: str) -> list[ListingSnapshot] | None:
         """The product's snapshots when the store's data changed, None when it didn't."""
